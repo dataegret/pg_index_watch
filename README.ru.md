@@ -12,9 +12,9 @@
 cd ~/stuff
 git pull
 #создаем структуру таблиц рабочих
-psql -q -1 -d postgres -f index_watch/index_watch_tables.sql
+psql -q -1 -d postgres -f pg_index_watch/index_watch_tables.sql
 #заливаем код (хранимки)
-psql -q -1 -d postgres -f index_watch/index_watch_functions.sql
+psql -q -1 -d postgres -f pg_index_watch/index_watch_functions.sql
 
 Начальный ручной запуск
 ВАЖНО: при первом запуске ВСЕ индексы больше 100MB будут перестроены. Так что делайте его в ручном режиме. Далее - только новые больше 100MB и распухшие.
@@ -26,11 +26,11 @@ psql -qt -c "CALL index_watch.periodic(TRUE);"
 00 00 * * *   psql -qt -c "CALL index_watch.periodic(TRUE);" > /var/log/postgresql/index_watch.log
 
 Обновление (от posgres пользователя)
-ToDo: придумать что делать с обновлением структуры таблиц если понадобится. Сейчас в коде есть проверка на совместимость версии таблиц с текущим кодом (так что ТЕОРЕТИЧЕСКИ код не должен будет запускаться на несовместимой структуре)
 cd ~/stuff
 git pull
 #заливаем обновленный код (хранимки)
-psql -q -1 -d postgres -f index_watch/index_watch_functions.sql
+psql -q -1 -d postgres -f pg_index_watch/index_watch_functions.sql
+Обновление структуры таблиц предусмотрено при очередном вызове index_watch.periodic.
 
 
 Просмотр истории реиндексации (она обновляется и во время начального запуска и при запусках из кронов)

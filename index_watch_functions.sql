@@ -6,27 +6,51 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.9';
+    RETURN '0.10';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
 
 --minimum table structure version required
-CREATE OR REPLACE FUNCTION index_watch._check_structure_version()
+
+
+
+CREATE OR REPLACE FUNCTION index_watch._check_update_structure_version() 
 RETURNS VOID AS
 $BODY$
 DECLARE
-  _tables_version INTEGER;
-  _required_version INTEGER :=1;
+   _tables_version INTEGER;
+   _required_version INTEGER :=2;
 BEGIN
-    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
-    IF (_tables_version<_required_version) THEN
-	RAISE EXCEPTION 'current tables version % is less than minimally required % for % code version, please update tables structure', _tables_version, _required_version, index_watch.version();
-    END IF;
+   SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
+   WHILE (_tables_version<_required_version) LOOP
+      EXECUTE 'SELECT index_watch._structure_version_'||_tables_version||'_'||_tables_version+1||'()';
+   _tables_version := _tables_version+1;
+END LOOP;
     RETURN;
 END;
 $BODY$
-LANGUAGE plpgsql STABLE;
+LANGUAGE plpgsql;
+
+
+--update table structure version from 1 to 2
+CREATE OR REPLACE FUNCTION index_watch._structure_version_1_2() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   CREATE VIEW index_watch.history AS
+      SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
+         datname AS db, schemaname AS schema, relname AS table, 
+         indexrelname AS index, indexsize_before AS size_before, indexsize_after AS size_after,
+         (indexsize_before::float/indexsize_after)::numeric(12,2) AS ratio, 
+         estimated_tuples AS tuples, date_trunc('seconds', reindex_duration) AS duration 
+      FROM index_watch.reindex_history ORDER BY id DESC;
+   UPDATE index_watch.tables_version SET version=2;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
 
 --convert patterns from psql format to like format
 CREATE OR REPLACE FUNCTION index_watch._pattern_convert(_var text)
@@ -424,7 +448,8 @@ DECLARE
 BEGIN
     SELECT index_watch._check_lock() INTO _id;
 
-    PERFORM index_watch._check_structure_version();
+    PERFORM index_watch._check_update_structure_version();
+    COMMIT;
     PERFORM index_watch._cleanup_old_records();
     COMMIT;
 

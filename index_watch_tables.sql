@@ -55,6 +55,16 @@ ALTER TABLE index_watch.config ADD CONSTRAINT inherit_check1 CHECK (indexrelname
 ALTER TABLE index_watch.config ADD CONSTRAINT inherit_check2 CHECK (relname      IS NULL OR relname      IS NOT NULL AND schemaname IS NOT NULL);
 ALTER TABLE index_watch.config ADD CONSTRAINT inherit_check3 CHECK (schemaname   IS NULL OR schemaname   IS NOT NULL AND datname    IS NOT NULL);
 
+
+CREATE VIEW index_watch.history AS
+  SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
+       datname AS db, schemaname AS schema, relname AS table, 
+       indexrelname AS index, indexsize_before AS size_before, indexsize_after AS size_after,
+       (indexsize_before::float/indexsize_after)::numeric(12,2) AS ratio, 
+       estimated_tuples AS tuples, date_trunc('seconds', reindex_duration) AS duration 
+  FROM index_watch.reindex_history ORDER BY id DESC;
+
+
 --DEFAULT GLOBAL settings
 INSERT INTO index_watch.config (key, value, comment) VALUES 
 ('index_size_threshold', '10MB', 'ignore indexes under 10MB size unless forced entries found in history'),
@@ -71,5 +81,5 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(1);
+INSERT INTO index_watch.tables_version VALUES(2);
 
