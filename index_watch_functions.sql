@@ -6,12 +6,28 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.10';
+    RETURN '0.11';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
 
+
+
 --minimum table structure version required
+CREATE OR REPLACE FUNCTION index_watch._check_structure_version()
+RETURNS VOID AS
+$BODY$
+DECLARE
+  _tables_version INTEGER;
+  _required_version INTEGER :=2;
+BEGIN
+    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
+    IF (_tables_version<_required_version) THEN
+	RAISE EXCEPTION 'current tables version % is less than minimally required % for % code version, please update tables structure', _tables_version, _required_version, index_watch.version();
+    END IF;
+END;
+$BODY$
+LANGUAGE plpgsql;
 
 
 
