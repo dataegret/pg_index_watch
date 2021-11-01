@@ -26,17 +26,19 @@ psql -1 -d postgres -f pg_index_watch/index_watch_functions.sql
 ВАЖНО при первом запуске ВСЕ индексы больше 10MB (настройка по умолчанию) будут ОДНОКРАТНО перестроены. 
 
 Может занять многие часы на больших многотерабайтных базах. Так что делайте его в ручном режиме.  Далее - только новые крупные индексы и распухшие будут обрабатываться.
-
-`nohup psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);" >> index_watch.log`
+```
+nohup psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);" >> index_watch.log
+```
 
 
 
 ## Автоматическая работа далее:
-Установить в крон раз в сутки (работа от superuser пользователя базы = обычно postgres)
+Установить в крон раз в сутки например в полночь (работа от superuser пользователя базы = обычно postgres)
 
 __ВАЖНО Очень желательно не пересекать по времени с pg_dump и прочими долгими maintenance задачами.__
-
-`00 00 * * *   psql -d postgres -AtqXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);"`
+```
+00 00 * * *   psql -d postgres -AtqXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);"
+```
 
 
 
@@ -47,22 +49,25 @@ git pull
 #заливаем обновленный код (хранимки)
 psql -1 -d postgres -f index_watch_functions.sql
 ```
-
-
 Обновление структуры таблиц index_watch будет произведено АВТОМАТИЧЕСКИ при очередном вызове index_watch.periodic если будет необходимость.
 
 Так же можно обновить структуру таблиц до актуальной для текущей версии кода руками (при обычной эксплуатации не требуется):
-`psql -1 -d postgres -c "SELECT index_watch._check_update_structure_version()"`
+```
+psql -1 -d postgres -c "SELECT index_watch._check_update_structure_version()"
+```
 
 
 ## Просмотр истории реиндексации (она обновляется и во время начального запуска и при запусках из кронов):
-`psql -1 -d postgres -c "SELECT * FROM index_watch.history LIMIT 20"`
+```
+psql -1 -d postgres -c "SELECT * FROM index_watch.history LIMIT 20"
+```
 
 
 ## просмотр текущего состояния bloat в конкретной базе DB_NAME:
 __Предполагает что крон index_watch.periodic РАБОТАЕТ, иначе данные не будут обновляться.__
-
-`psql -1 -d postgres -c "select * from index_watch.get_index_bloat_estimates('DB_NAME') order by estimated_bloat desc nulls last limit 40;"`
+```
+psql -1 -d postgres -c "select * from index_watch.get_index_bloat_estimates('DB_NAME') order by estimated_bloat desc nulls last limit 40;"
+```
 
 
 
