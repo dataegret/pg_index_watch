@@ -190,7 +190,7 @@ BEGIN
       CASE WHEN relpages=0 THEN greatest(1, indexreltuples) ELSE (relsize::real/(relpages::real*current_setting('block_size')::real)*indexreltuples::real)::BIGINT END AS estimated_tuples
     FROM
     dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname),
-    E'
+    $SQL$
       SELECT
           n.nspname AS schemaname
         , c.relname
@@ -209,25 +209,26 @@ BEGIN
       JOIN pg_catalog.pg_namespace n       ON n.oid = c.relnamespace
       JOIN pg_catalog.pg_am a              ON a.oid = i.relam
       --toast indexes info
-      LEFT JOIN pg_catalog.pg_class c1     ON c1.reltoastrelid = c.oid AND n.nspname = \'pg_toast\'
+      LEFT JOIN pg_catalog.pg_class c1     ON c1.reltoastrelid = c.oid AND n.nspname = 'pg_toast'
       LEFT JOIN pg_catalog.pg_namespace n1 ON c1.relnamespace = n1.oid 
       
       WHERE 
       TRUE
       --limit reindex for indexes on tables/mviews/toast
-      AND c.relkind = ANY (ARRAY[\'r\'::"char", \'t\'::"char", \'m\'::"char"])
+      AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
       --ignore exclusion constraints
-      AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype=\'x\')
+      AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
       --ignore indexes for system tables and index_watch own tables
-      AND n.nspname NOT IN (\'pg_catalog\', \'information_schema\', \'index_watch\')
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
       --ignore indexes on toast tables of system tables and index_watch own tables
-      AND (n1.nspname IS NULL OR n1.nspname NOT IN (\'pg_catalog\', \'information_schema\', \'index_watch\'))
+      AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
       --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%40postgresql.org
-      AND a.amname NOT IN (\'brin\')
+      AND a.amname NOT IN ('brin')
       
       --debug only     
       --ORDER by 1,2,3
-    ')
+    $SQL$
+    )
     AS _res(schemaname name, relname name, indexrelname name, relpages BIGINT, indexreltuples BIGINT, relsize BIGINT, indexsize BIGINT)
     WHERE 
     (_schemaname IS NULL   OR _res.schemaname=_schemaname)
