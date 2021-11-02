@@ -1,3 +1,14 @@
+\set ON_ERROR_STOP
+
+DO $$
+BEGIN
+  IF (SELECT setting FROM pg_settings WHERE name='server_version_num')<'12'
+  THEN
+    RAISE 'This library works only for PostgreSQL 12 or higher!';
+  END IF;
+END; $$;
+
+
 CREATE EXTENSION IF NOT EXISTS dblink;
 ALTER EXTENSION dblink UPDATE;
 
@@ -189,7 +200,7 @@ BEGIN
       _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexsize,
       CASE WHEN relpages=0 THEN greatest(1, indexreltuples) ELSE (relsize::real/(relpages::real*current_setting('block_size')::real)*indexreltuples::real)::BIGINT END AS estimated_tuples
     FROM
-    dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname),
+    dblink('port='||current_setting('port')||' dbname=\\''||_datname||'\\''),
     E'
       SELECT
         pg_stat_user_indexes.schemaname, 
