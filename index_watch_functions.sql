@@ -6,7 +6,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.13';
+    RETURN '0.15';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -215,7 +215,9 @@ BEGIN
       WHERE 
       TRUE
       --limit reindex for indexes on tables/mviews/toast
-      AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
+      --AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
+      --limit reindex for indexes on tables/mviews (skip topast until bugfix of BUG #17268)
+      AND c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])
       --ignore exclusion constraints
       AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
       --ignore indexes for system tables and index_watch own tables
