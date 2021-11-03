@@ -20,7 +20,7 @@ create index reindex_history_index on index_watch.reindex_history(datname, schem
 
 
 --history of index sizes (not really neccessary to keep all this data but very useful for future analyzis of bloat trends
-CREATE TABLE index_watch.index_history 
+CREATE TABLE index_watch.index_current_state 
 (
   id bigserial primary key,
   entry_timestamp timestamptz not null default now(),
@@ -28,11 +28,11 @@ CREATE TABLE index_watch.index_history
   schemaname name not null,
   relname name not null,
   indexrelname name not null,
-  server_version_num integer not null default current_setting('server_version_num')::integer,
   indexsize BIGINT not null,
-  estimated_tuples BIGINT not null
+  estimated_tuples BIGINT not null,
+  best_ratio REAL not null
 );
-create index index_history_index on index_watch.index_history(datname, schemaname, relname, indexrelname, entry_timestamp);
+CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname, entry_timestamp);
 
 --settings table
 CREATE TABLE index_watch.config
@@ -81,5 +81,5 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(2);
+INSERT INTO index_watch.tables_version VALUES(3);
 

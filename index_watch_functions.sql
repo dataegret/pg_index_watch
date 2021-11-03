@@ -6,7 +6,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.10';
+    RETURN '0.11';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -20,7 +20,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER :=2;
+   _required_version INTEGER := 3;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -207,9 +207,9 @@ RETURNS VOID
 AS
 $BODY$
 BEGIN
-  INSERT INTO index_watch.index_history 
-  (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples)
-  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples
+  INSERT INTO index_watch.index_current_state 
+  (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
+  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, indexsize/estimated_tuples
   FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
   WHERE
       (
@@ -219,7 +219,10 @@ BEGIN
         --AND
         --index_watch.get_setting (for future configurability)
       )
-    ;
+    ON CONFLICT (index_current_state_index) DO 
+    UPDATE index_watch.index_current_state SET 
+      indexsize=NEW.indexsize, estimated_tuples=NEW.estimated_tuples, best_ratio=min(best_ratio, NEW.indexsize::real/NEW.estimated_tuples::real)
+    WHERE datname=NEW.datname, schemaname=NEW.schemaname, relname=NEW.relname, indexrelname=NEW.indexrelname;
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -229,19 +232,6 @@ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION index_watch._cleanup_old_records() RETURNS VOID AS
 $BODY$
 BEGIN
-    --TODO replace with fast distinct implementation
-    WITH 
-        rels AS MATERIALIZED (SELECT DISTINCT datname, schemaname, relname, indexrelname FROM index_watch.index_history),
-        age_limit AS MATERIALIZED (SELECT *, now()-index_watch.get_setting(datname,schemaname,relname,indexrelname,  'index_history_retention_period')::interval AS max_age FROM rels)
-    DELETE FROM index_watch.index_history 
-        USING age_limit 
-        WHERE 
-            index_history.datname=age_limit.datname 
-            AND index_history.schemaname=age_limit.schemaname
-            AND index_history.relname=age_limit.relname
-            AND index_history.indexrelname=age_limit.indexrelname
-            AND index_history.entry_timestamp<age_limit.max_age;
-                        
     --TODO replace with fast distinct implementation
     WITH 
         rels AS MATERIALIZED (SELECT DISTINCT datname, schemaname, relname, indexrelname FROM index_watch.reindex_history),
@@ -324,7 +314,6 @@ BEGIN
 END;
 $BODY$
 LANGUAGE plpgsql STRICT;
-
 
 
 
