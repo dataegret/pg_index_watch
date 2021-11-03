@@ -1,41 +1,73 @@
+## Минимальные требования для инсталяции и использования:
+- Версия PostgreSQL 12.0 и выше
+- superuser доступ в базу с взможностью крон прописать от текущего пользователя (psql доступ достаточнен... рут не требуется... sudo на postgres на самом деле тоже)
+- возможность беспарольного или ~/.pgpass доступа от имени superuser ко всем ЛОКАЛЬНЫМ базам (т.е. если вы можете от пользователя из п2 сделать psql -U postgres -d datname не вводя пароля для всех баз кластера - всё будет ок).
 
 
-Это ЧЕРНОВИК без деталей внутренней реализации и настроек.
 
-Минимальные требования для инсталяции
-1. Версия PostgreSQL 12.0 и выше (ToDo добавить в index_watch_functions.sql проверку чтобы не ставилось на 11 версию и ранее в принципе)
-2. superuser доступ в базу с взможностью крон прописать от текущего пользователя (psql доступ достаточнен... рут не требуется... sudo на postgres на самом деле тоже)
-3. возможность беспарольного или ~/.pgpass доступа от имени superuser ко всем базам (т.е. если вы можете от пользователя из п2 сделать psql -U postgres -d datname не вводя пароля для всех баз кластера - все ок).
-при несоблюдении этих правил тупо не будет работать но и ничего не сломает.
+## Рекомендации:
+- Если ресурсы сервера позволяют - установить max_parallel_maintenance_workers=8 (лучше даже 16). 
+- Достаточно большой wal_keep_segments (5000 обычно достаточно = 80GB) если не используется wal архив для подпорки потоковой репликации.
 
-Инсталяция (от posgres пользователя)
-cd ~/stuff
-git pull
-#создаем структуру таблиц рабочих
-psql -q -1 -d postgres -f pg_index_watch/index_watch_tables.sql
-#заливаем код (хранимки)
-psql -q -1 -d postgres -f pg_index_watch/index_watch_functions.sql
 
-Начальный ручной запуск
-ВАЖНО: при первом запуске ВСЕ индексы больше 100MB будут перестроены. Так что делайте его в ручном режиме. Далее - только новые больше 100MB и распухшие.
-psql -qt -c "CALL index_watch.periodic(TRUE);"
+## Инсталяция (от posgres пользователя):
+```
+#достаём код
+git clone https://github.com/dataegret/pg_index_watch
+cd pg_index_watch
+#создаём структуру таблиц
+psql -1 -d postgres -f index_watch_tables.sql
+#заливаем код (хранимые процедуры)
+psql -1 -d postgres -f index_watch_functions.sql
+```
 
-Установка в крон раз в сутки (от posgres пользователя)
-Очень желательно не пересекать по времени с pg_dump и прочими долгими maintenance задачами.
-# Automatic reindex based on bloat
-00 00 * * *   psql -qt -c "CALL index_watch.periodic(TRUE);" > /var/log/postgresql/index_watch.log
 
-Обновление (от posgres пользователя)
-cd ~/stuff
+## Первоачальный запуск:
+__ВАЖНО при первом запуске ВСЕ индексы больше 10MB (настройка по умолчанию) будут ОДНОКРАТНО перестроены. __
+
+Может занять многие часы на больших многотерабайтных базах. Так что делайте его в ручном режиме.  Далее - только новые крупные индексы и распухшие будут обрабатываться.
+```
+nohup psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);" >> index_watch.log
+```
+
+
+
+## Автоматическая работа далее:
+Установить в крон раз в сутки например в полночь (работа от superuser пользователя базы = обычно postgres)
+
+__ВАЖНО Очень желательно не пересекать по времени с pg_dump и прочими долгими maintenance задачами.__
+```
+00 00 * * *   psql -d postgres -AtqXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);"
+```
+
+
+
+## Обновление (от posgres пользователя):
+```
+cd pg_index_watch
 git pull
 #заливаем обновленный код (хранимки)
-psql -q -1 -d postgres -f pg_index_watch/index_watch_functions.sql
-Обновление структуры таблиц предусмотрено при очередном вызове index_watch.periodic.
+psql -1 -d postgres -f index_watch_functions.sql
+```
+Обновление структуры таблиц index_watch будет произведено АВТОМАТИЧЕСКИ при очередном вызове index_watch.periodic если будет необходимость.
+
+Так же можно обновить структуру таблиц до актуальной для текущей версии кода руками (при обычной эксплуатации не требуется):
+```
+psql -1 -d postgres -c "SELECT index_watch._check_update_structure_version()"
+```
 
 
-Просмотр истории реиндексации (она обновляется и во время начального запуска и при запусках из кронов)
-select date_trunc('second', entry_timestamp)::timestamp as ts,datname as db,schemaname as schema,relname as table,indexrelname as index,indexsize_before as size_before,indexsize_after as size_after,(indexsize_before::float/indexsize_after)::numeric(12,2) as ratio, estimated_tuples as tuples,date_trunc('seconds', reindex_duration) as duration from index_watch.reindex_history order by id desc limit 40;
+## Просмотр истории реиндексации (она обновляется и во время начального запуска и при запусках из кронов):
+```
+psql -1 -d postgres -c "SELECT * FROM index_watch.history LIMIT 20"
+```
 
 
-просмотр текущего состояния bloat в заданной базе (предполагает что крон РАБОТАЕТ обновляющий эти данные)
-select * from index_watch.get_index_bloat_estimates('DB_NAME') order by estimated_bloat desc nulls last limit 40;
+## просмотр текущего состояния bloat в конкретной базе DB_NAME:
+__Предполагает что крон index_watch.periodic РАБОТАЕТ, иначе данные не будут обновляться.__
+```
+psql -1 -d postgres -c "select * from index_watch.get_index_bloat_estimates('DB_NAME') order by estimated_bloat desc nulls last limit 40;"
+```
+
+
+

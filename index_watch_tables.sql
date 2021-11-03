@@ -1,3 +1,15 @@
+\set ON_ERROR_STOP
+
+DO $$
+BEGIN
+  IF (SELECT setting FROM pg_settings WHERE name='server_version_num')<'12'
+  THEN
+    RAISE 'This library works only for PostgreSQL 12 or higher!';
+  END IF;
+END; $$;
+
+
+
 CREATE SCHEMA IF NOT EXISTS index_watch;
 
 --history of performed REINDEX action

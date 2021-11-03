@@ -1,3 +1,14 @@
+\set ON_ERROR_STOP
+
+DO $$
+BEGIN
+  IF (SELECT setting FROM pg_settings WHERE name='server_version_num')<'12'
+  THEN
+    RAISE 'This library works only for PostgreSQL 12 or higher!';
+  END IF;
+END; $$;
+
+
 CREATE EXTENSION IF NOT EXISTS dblink;
 ALTER EXTENSION dblink UPDATE;
 
@@ -6,12 +17,32 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
+<<<<<<< HEAD
     RETURN '0.11';
+=======
+    RETURN '0.16';
+>>>>>>> efd4161bb817fbd174de135710db9ee4b7aa1df2
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
 
+
+
 --minimum table structure version required
+CREATE OR REPLACE FUNCTION index_watch._check_structure_version()
+RETURNS VOID AS
+$BODY$
+DECLARE
+  _tables_version INTEGER;
+  _required_version INTEGER :=2;
+BEGIN
+    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
+    IF (_tables_version<_required_version) THEN
+	RAISE EXCEPTION 'current tables version % is less than minimally required % for % code version, please update tables structure', _tables_version, _required_version, index_watch.version();
+    END IF;
+END;
+$BODY$
+LANGUAGE plpgsql;
 
 
 
@@ -173,21 +204,48 @@ BEGIN
       _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexsize,
       CASE WHEN relpages=0 THEN greatest(1, indexreltuples) ELSE (relsize::real/(relpages::real*current_setting('block_size')::real)*indexreltuples::real)::BIGINT END AS estimated_tuples
     FROM
-    dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname),
-    E'
+    dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
+    $SQL$
       SELECT
-        pg_stat_user_indexes.schemaname, 
-        pg_stat_user_indexes.relname, 
-        pg_stat_user_indexes.indexrelname,
-        c1.relpages::BIGINT, 
-        c2.reltuples::BIGINT AS indexreltuples, 
-        pg_catalog.pg_relation_size(pg_stat_user_indexes.relid)::BIGINT AS relsize, 
-        pg_catalog.pg_relation_size(pg_stat_user_indexes.indexrelid)::BIGINT AS indexsize        
-      FROM pg_catalog.pg_stat_user_indexes 
-      JOIN pg_catalog.pg_class AS c1 on c1.oid=pg_stat_user_indexes.relid
-      JOIN pg_catalog.pg_class AS c2 on c2.oid=pg_stat_user_indexes.indexrelid
-      WHERE NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=pg_stat_user_indexes.indexrelid and pg_constraint.contype=\'x\')
-    ')
+          n.nspname AS schemaname
+        , c.relname
+        , i.relname AS indexrelname
+        , c.relpages::BIGINT AS relpages
+        , i.reltuples::BIGINT AS indexreltuples
+        , pg_catalog.pg_relation_size(c.oid)::BIGINT AS relsize 
+        , pg_catalog.pg_relation_size(i.oid)::BIGINT AS indexsize        
+        --debug only
+        --, pg_namespace.nspname
+        --, c3.relname,
+        --, am.amname        
+      FROM pg_index x
+      JOIN pg_catalog.pg_class c           ON c.oid = x.indrelid
+      JOIN pg_catalog.pg_class i           ON i.oid = x.indexrelid
+      JOIN pg_catalog.pg_namespace n       ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_am a              ON a.oid = i.relam
+      --toast indexes info
+      LEFT JOIN pg_catalog.pg_class c1     ON c1.reltoastrelid = c.oid AND n.nspname = 'pg_toast'
+      LEFT JOIN pg_catalog.pg_namespace n1 ON c1.relnamespace = n1.oid 
+      
+      WHERE 
+      TRUE
+      --limit reindex for indexes on tables/mviews/toast
+      --AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
+      --limit reindex for indexes on tables/mviews (skip topast until bugfix of BUG #17268)
+      AND c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])
+      --ignore exclusion constraints
+      AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
+      --ignore indexes for system tables and index_watch own tables
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
+      --ignore indexes on toast tables of system tables and index_watch own tables
+      AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
+      --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%40postgresql.org
+      AND a.amname NOT IN ('brin')
+      
+      --debug only     
+      --ORDER by 1,2,3
+    $SQL$
+    )
     AS _res(schemaname name, relname name, indexrelname name, relpages BIGINT, indexreltuples BIGINT, relsize BIGINT, indexsize BIGINT)
     WHERE 
     (_schemaname IS NULL   OR _res.schemaname=_schemaname)
@@ -327,7 +385,7 @@ DECLARE
   _indexsize_after  BIGINT;
   _timestamp        TIMESTAMP;
   _reindex_duration INTERVAL;
-  _analyze_duration INTERVAL;
+  _analyze_duration INTERVAL :='0s';
   _estimated_tuples BIGINT;
 BEGIN
 
@@ -343,14 +401,17 @@ BEGIN
   
   --time to dance
   _timestamp := pg_catalog.clock_timestamp ();
-  PERFORM dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname), 'REINDEX INDEX CONCURRENTLY '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_indexrelname));
+  PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'REINDEX INDEX CONCURRENTLY '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_indexrelname));
   _reindex_duration := pg_catalog.clock_timestamp ()-_timestamp;
   
   --analyze 
-  _timestamp := clock_timestamp ();
-  PERFORM dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname), 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
-  _analyze_duration := pg_catalog.clock_timestamp ()-_timestamp;
-
+  --skip analyze for toast tables
+  IF (_schemaname != 'pg_toast') THEN
+    _timestamp := clock_timestamp ();
+    PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
+     _analyze_duration := pg_catalog.clock_timestamp ()-_timestamp;
+  END IF;
+ 
   --get final index size
   SELECT indexsize, estimated_tuples INTO STRICT _indexsize_after, _estimated_tuples
   FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname);
