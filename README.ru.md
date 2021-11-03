@@ -14,12 +14,12 @@
 ```
 #достаём код
 git clone https://github.com/dataegret/pg_index_watch
-#создаём структуру таблиц рабочих
-psql -1 -d postgres -f pg_index_watch/index_watch_tables.sql
+cd pg_index_watch
+#создаём структуру таблиц
+psql -1 -d postgres -f index_watch_tables.sql
 #заливаем код (хранимые процедуры)
-psql -1 -d postgres -f pg_index_watch/index_watch_functions.sql
+psql -1 -d postgres -f index_watch_functions.sql
 ```
-
 
 
 ## Первоачальный запуск:
