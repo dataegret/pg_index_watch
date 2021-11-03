@@ -200,21 +200,46 @@ BEGIN
       _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexsize,
       CASE WHEN relpages=0 THEN greatest(1, indexreltuples) ELSE (relsize::real/(relpages::real*current_setting('block_size')::real)*indexreltuples::real)::BIGINT END AS estimated_tuples
     FROM
-    dblink('port='||current_setting('port')||' dbname=\\''||_datname||'\\''),
-    E'
+    dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
+    $SQL$
       SELECT
-        pg_stat_user_indexes.schemaname, 
-        pg_stat_user_indexes.relname, 
-        pg_stat_user_indexes.indexrelname,
-        c1.relpages::BIGINT, 
-        c2.reltuples::BIGINT AS indexreltuples, 
-        pg_catalog.pg_relation_size(pg_stat_user_indexes.relid)::BIGINT AS relsize, 
-        pg_catalog.pg_relation_size(pg_stat_user_indexes.indexrelid)::BIGINT AS indexsize        
-      FROM pg_catalog.pg_stat_user_indexes 
-      JOIN pg_catalog.pg_class AS c1 on c1.oid=pg_stat_user_indexes.relid
-      JOIN pg_catalog.pg_class AS c2 on c2.oid=pg_stat_user_indexes.indexrelid
-      WHERE NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=pg_stat_user_indexes.indexrelid and pg_constraint.contype=\'x\')
-    ')
+          n.nspname AS schemaname
+        , c.relname
+        , i.relname AS indexrelname
+        , c.relpages::BIGINT AS relpages
+        , i.reltuples::BIGINT AS indexreltuples
+        , pg_catalog.pg_relation_size(c.oid)::BIGINT AS relsize 
+        , pg_catalog.pg_relation_size(i.oid)::BIGINT AS indexsize        
+        --debug only
+        --, pg_namespace.nspname
+        --, c3.relname,
+        --, am.amname        
+      FROM pg_index x
+      JOIN pg_catalog.pg_class c           ON c.oid = x.indrelid
+      JOIN pg_catalog.pg_class i           ON i.oid = x.indexrelid
+      JOIN pg_catalog.pg_namespace n       ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_am a              ON a.oid = i.relam
+      --toast indexes info
+      LEFT JOIN pg_catalog.pg_class c1     ON c1.reltoastrelid = c.oid AND n.nspname = 'pg_toast'
+      LEFT JOIN pg_catalog.pg_namespace n1 ON c1.relnamespace = n1.oid 
+      
+      WHERE 
+      TRUE
+      --limit reindex for indexes on tables/mviews/toast
+      AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
+      --ignore exclusion constraints
+      AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
+      --ignore indexes for system tables and index_watch own tables
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
+      --ignore indexes on toast tables of system tables and index_watch own tables
+      AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
+      --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%40postgresql.org
+      AND a.amname NOT IN ('brin')
+      
+      --debug only     
+      --ORDER by 1,2,3
+    $SQL$
+    )
     AS _res(schemaname name, relname name, indexrelname name, relpages BIGINT, indexreltuples BIGINT, relsize BIGINT, indexsize BIGINT)
     WHERE 
     (_schemaname IS NULL   OR _res.schemaname=_schemaname)
@@ -381,12 +406,12 @@ BEGIN
   
   --time to dance
   _timestamp := pg_catalog.clock_timestamp ();
-  PERFORM dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname), 'REINDEX INDEX CONCURRENTLY '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_indexrelname));
+  PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'REINDEX INDEX CONCURRENTLY '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_indexrelname));
   _reindex_duration := pg_catalog.clock_timestamp ()-_timestamp;
   
   --analyze 
   _timestamp := clock_timestamp ();
-  PERFORM dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname), 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
+  PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
   _analyze_duration := pg_catalog.clock_timestamp ()-_timestamp;
 
   --get final index size
