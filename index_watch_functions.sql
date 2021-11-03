@@ -415,7 +415,7 @@ BEGIN
   --skip analyze for toast tables
   IF (_schemaname != 'pg_toast') THEN
     _timestamp := clock_timestamp ();
-    PERFORM dblink('port='||current_setting('port')||' dbname='||pg_catalog.quote_ident(_datname), 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
+    PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
      _analyze_duration := pg_catalog.clock_timestamp ()-_timestamp;
   END IF;
  
