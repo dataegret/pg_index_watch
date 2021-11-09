@@ -44,7 +44,7 @@ CREATE TABLE index_watch.index_current_state
   estimated_tuples BIGINT not null,
   best_ratio REAL not null
 );
-CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname, entry_timestamp);
+CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 
 --settings table
 CREATE TABLE index_watch.config

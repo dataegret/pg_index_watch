@@ -17,11 +17,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-<<<<<<< HEAD
-    RETURN '0.11';
-=======
-    RETURN '0.16';
->>>>>>> efd4161bb817fbd174de135710db9ee4b7aa1df2
+    RETURN '0.17';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -34,7 +30,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER :=2;
+  _required_version INTEGER :=3;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -51,7 +47,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 3;
+   _required_version INTEGER :=3;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -77,6 +73,73 @@ BEGIN
          estimated_tuples AS tuples, date_trunc('seconds', reindex_duration) AS duration 
       FROM index_watch.reindex_history ORDER BY id DESC;
    UPDATE index_watch.tables_version SET version=2;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+--update table structure version from 2 to 3
+CREATE OR REPLACE FUNCTION index_watch._structure_version_2_3() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   CREATE TABLE index_watch.index_current_state 
+   (
+     id bigserial primary key,
+     entry_timestamp timestamptz not null default now(),
+     datname name not null,
+     schemaname name not null,
+     relname name not null,
+     indexrelname name not null,
+     indexsize BIGINT not null,
+     estimated_tuples BIGINT not null,
+     best_ratio REAL not null
+   );
+   CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
+
+   WITH 
+    _last_reindex_values AS (
+    SELECT
+      DISTINCT ON (datname, schemaname, relname, indexrelname)
+      reindex_history.datname, reindex_history.schemaname, reindex_history.relname, reindex_history.indexrelname, entry_timestamp, estimated_tuples, indexsize_after AS indexsize
+      FROM index_watch.reindex_history 
+      ORDER BY datname, schemaname, relname, indexrelname, entry_timestamp DESC
+    ),
+    _all_history_since_reindex AS (
+       --last reindexed value
+       SELECT _last_reindex_values.datname, _last_reindex_values.schemaname, _last_reindex_values.relname, _last_reindex_values.indexrelname, _last_reindex_values.entry_timestamp, _last_reindex_values.estimated_tuples, _last_reindex_values.indexsize
+       FROM _last_reindex_values
+       UNION ALL
+       --all values since reindex or from start
+       SELECT index_history.datname, index_history.schemaname, index_history.relname, index_history.indexrelname, index_history.entry_timestamp, index_history.estimated_tuples, index_history.indexsize
+       FROM index_watch.index_history
+       LEFT JOIN _last_reindex_values USING (datname, schemaname, relname, indexrelname)
+       WHERE index_history.entry_timestamp>=coalesce(_last_reindex_values.entry_timestamp, '-INFINITY'::timestamp)
+    ),
+    _best_values AS (
+      --only valid best if reindex entry exists
+      SELECT 
+        DISTINCT ON (datname, schemaname, relname, indexrelname) 
+        _all_history_since_reindex.*,
+        _all_history_since_reindex.indexsize::real/_all_history_since_reindex.estimated_tuples::real as best_ratio
+      FROM _all_history_since_reindex 
+      JOIN _last_reindex_values USING (datname, schemaname, relname, indexrelname)
+      ORDER BY datname, schemaname, relname, indexrelname, _all_history_since_reindex.indexsize::real/_all_history_since_reindex.estimated_tuples::real
+    ),
+    _current_state AS (
+     SELECT 
+        DISTINCT ON (datname, schemaname, relname, indexrelname) 
+        _all_history_since_reindex.* 
+      FROM _all_history_since_reindex
+      ORDER BY datname, schemaname, relname, indexrelname, entry_timestamp DESC
+    )
+    INSERT INTO index_watch.index_current_state 
+      (entry_timestamp, datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio) 
+      SELECT c.entry_timestamp, c.datname, c.schemaname, c.relname, c.indexrelname, c.indexsize, c.estimated_tuples, best_ratio
+      FROM _current_state c JOIN _best_values USING (datname, schemaname, relname, indexrelname);
+   DROP TABLE index_watch.index_history;
+   UPDATE index_watch.tables_version SET version=3;
    RETURN;
 END;
 $BODY$
@@ -265,9 +328,9 @@ RETURNS VOID
 AS
 $BODY$
 BEGIN
-  INSERT INTO index_watch.index_current_state 
+  INSERT INTO index_watch.index_current_state AS i
   (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
-  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, indexsize/estimated_tuples
+  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, indexsize::real/estimated_tuples::real
   FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
   WHERE
       (
@@ -277,10 +340,9 @@ BEGIN
         --AND
         --index_watch.get_setting (for future configurability)
       )
-    ON CONFLICT (index_current_state_index) DO 
-    UPDATE index_watch.index_current_state SET 
-      indexsize=NEW.indexsize, estimated_tuples=NEW.estimated_tuples, best_ratio=min(best_ratio, NEW.indexsize::real/NEW.estimated_tuples::real)
-    WHERE datname=NEW.datname, schemaname=NEW.schemaname, relname=NEW.relname, indexrelname=NEW.indexrelname;
+    ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
+    UPDATE SET 
+      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=least(i.best_ratio, EXCLUDED.best_ratio), entry_timestamp=now();
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -310,7 +372,6 @@ LANGUAGE plpgsql;
 
 
 
-
 CREATE OR REPLACE FUNCTION index_watch.get_index_bloat_estimates(_datname name)
 RETURNS TABLE(datname name, schemaname name, relname name, indexrelname name, indexsize bigint, estimated_bloat real) 
 AS
@@ -319,56 +380,10 @@ BEGIN
   PERFORM index_watch._check_structure_version();
   -- compare current index size per tuple with the best result since reindex value (including just after reindex data from reindex_history)
   RETURN QUERY 
-  WITH 
-    _last_reindex_values AS (
-    SELECT
-      DISTINCT ON (schemaname, relname, indexrelname)
-      reindex_history.schemaname, reindex_history.relname, reindex_history.indexrelname, entry_timestamp, estimated_tuples, indexsize_after AS indexsize
-      FROM index_watch.reindex_history 
-      WHERE 
-        reindex_history.datname = _datname
-      ORDER BY schemaname, relname, indexrelname, entry_timestamp DESC
-    ),
-    _all_history_since_reindex AS (
-       --last reindexed value
-       SELECT _last_reindex_values.schemaname, _last_reindex_values.relname, _last_reindex_values.indexrelname, _last_reindex_values.entry_timestamp, _last_reindex_values.estimated_tuples, _last_reindex_values.indexsize
-       FROM _last_reindex_values
-       UNION ALL
-       --all values since reindex or from start
-       SELECT index_history.schemaname, index_history.relname, index_history.indexrelname, index_history.entry_timestamp, index_history.estimated_tuples, index_history.indexsize
-       FROM index_watch.index_history
-       LEFT JOIN _last_reindex_values USING (schemaname, relname, indexrelname)
-       WHERE 
-         index_history.datname = _datname
-         AND index_history.entry_timestamp>=coalesce(_last_reindex_values.entry_timestamp, '-INFINITY'::timestamp)
-    ),
-    _best_values AS (
-      --only valid best if reindex entry exists
-      SELECT 
-        DISTINCT ON (schemaname, relname, indexrelname) 
-        _all_history_since_reindex.*
-      FROM _all_history_since_reindex 
-      JOIN _last_reindex_values USING (schemaname, relname, indexrelname)
-      WHERE 
-        _all_history_since_reindex.indexsize > pg_size_bytes(index_watch.get_setting(_datname, _all_history_since_reindex.schemaname, _all_history_since_reindex.relname, _all_history_since_reindex.indexrelname, 'minimum_reliable_index_size'))
-      ORDER BY schemaname, relname, indexrelname, _all_history_since_reindex.estimated_tuples::real/_all_history_since_reindex.indexsize::real DESC
-    ),
-    _current_state AS (
-      SELECT 
-        DISTINCT ON (schemaname, relname, indexrelname) 
-        _all_history_since_reindex.* 
-      FROM _all_history_since_reindex
-      ORDER BY schemaname, relname, indexrelname, entry_timestamp DESC
-    ),
-    _result AS (
-       SELECT 
-         _current_state.*, 
-         --((_current_state.indexsize::real/_current_state.estimated_tuples::real)/(_best_values.indexsize::real/_best_values.estimated_tuples::real)) AS estimated_bloat
-	case WHEN (_best_values.indexsize::real*_current_state.estimated_tuples::real=0) THEN 1000 ELSE ((_current_state.indexsize::real*_best_values.estimated_tuples::real)/(_best_values.indexsize::real*_current_state.estimated_tuples::real)) END AS estimated_bloat
-       FROM _current_state
-       LEFT JOIN _best_values USING (schemaname, relname, indexrelname)
-    )
-  SELECT _datname, _result.schemaname, _result.relname, _result.indexrelname, _result.indexsize, _result.estimated_bloat FROM _result;
+  SELECT _datname, i.schemaname, i.relname, i.indexrelname, i.indexsize,
+  (i.indexsize::real/(i.best_ratio*estimated_tuples::real)) AS estimated_bloat
+  FROM index_watch.index_current_state AS i
+  WHERE i.datname = _datname AND i.indexsize > pg_size_bytes(index_watch.get_setting(_datname, i.schemaname, i.relname, i.indexrelname, 'minimum_reliable_index_size'));
 END;
 $BODY$
 LANGUAGE plpgsql STRICT;
@@ -421,7 +436,13 @@ BEGIN
   (datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples, reindex_duration, analyze_duration)
   VALUES 
   (_datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples, _reindex_duration, _analyze_duration);
-
+  INSERT INTO index_watch.index_current_state 
+  (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
+  VALUES (_datname, _schemaname, _relname, _indexrelname, _indexsize_after, _estimated_tuples, 
+    _indexsize_after::real/_estimated_tuples::real) 
+    ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
+    UPDATE SET 
+      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=EXCLUDED.best_ratio, entry_timestamp=now();
   RETURN;
 END;
 $BODY$
