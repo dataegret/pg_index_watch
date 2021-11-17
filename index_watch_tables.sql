@@ -35,14 +35,14 @@ create index reindex_history_index on index_watch.reindex_history(datname, schem
 CREATE TABLE index_watch.index_current_state 
 (
   id bigserial primary key,
-  entry_timestamp timestamptz not null default now(),
+  mtime timestamptz not null default now(),
   datname name not null,
   schemaname name not null,
   relname name not null,
   indexrelname name not null,
   indexsize BIGINT not null,
   estimated_tuples BIGINT not null,
-  best_ratio REAL not null
+  best_ratio REAL
 );
 CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 

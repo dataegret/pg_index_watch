@@ -87,14 +87,14 @@ BEGIN
    CREATE TABLE index_watch.index_current_state 
    (
      id bigserial primary key,
-     entry_timestamp timestamptz not null default now(),
+     mtime timestamptz not null default now(),
      datname name not null,
      schemaname name not null,
      relname name not null,
      indexrelname name not null,
      indexsize BIGINT not null,
      estimated_tuples BIGINT not null,
-     best_ratio REAL not null
+     best_ratio REAL
    );
    CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 
@@ -135,7 +135,7 @@ BEGIN
       ORDER BY datname, schemaname, relname, indexrelname, entry_timestamp DESC
     )
     INSERT INTO index_watch.index_current_state 
-      (entry_timestamp, datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio) 
+      (mtime, datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio) 
       SELECT c.entry_timestamp, c.datname, c.schemaname, c.relname, c.indexrelname, c.indexsize, c.estimated_tuples, best_ratio
       FROM _current_state c JOIN _best_values USING (datname, schemaname, relname, indexrelname);
    DROP TABLE index_watch.index_history;
@@ -252,12 +252,6 @@ LANGUAGE plpgsql;
 
 
 
-
-
-
-
-
-
 CREATE OR REPLACE FUNCTION index_watch._remote_get_indexes_info(_datname name, _schemaname name, _relname name, _indexrelname name)
 RETURNS TABLE(datname name, schemaname name, relname name, indexrelname name, indexsize BIGINT, estimated_tuples BIGINT) 
 AS
@@ -330,7 +324,7 @@ $BODY$
 BEGIN
   INSERT INTO index_watch.index_current_state AS i
   (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
-  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, indexsize::real/estimated_tuples::real
+  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, NULL
   FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
   WHERE
       (
@@ -342,7 +336,7 @@ BEGIN
       )
     ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
     UPDATE SET 
-      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=least(i.best_ratio, EXCLUDED.best_ratio), entry_timestamp=now();
+      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real), mtime=now();
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -442,7 +436,7 @@ BEGIN
     _indexsize_after::real/_estimated_tuples::real) 
     ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
     UPDATE SET 
-      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=EXCLUDED.best_ratio, entry_timestamp=now();
+      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=EXCLUDED.best_ratio, mtime=now();
   RETURN;
 END;
 $BODY$
