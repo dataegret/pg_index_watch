@@ -98,6 +98,9 @@ BEGIN
    );
    CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 
+   UPDATE index_watch.config SET value='128kB' 
+   WHERE key='minimum_reliable_index_size' AND value<'128kB';
+   
    WITH 
     _last_reindex_values AS (
     SELECT
@@ -125,6 +128,7 @@ BEGIN
         _all_history_since_reindex.indexsize::real/_all_history_since_reindex.estimated_tuples::real as best_ratio
       FROM _all_history_since_reindex 
       JOIN _last_reindex_values USING (datname, schemaname, relname, indexrelname)
+      WHERE _all_history_since_reindex.indexsize > pg_size_bytes('128kB')
       ORDER BY datname, schemaname, relname, indexrelname, _all_history_since_reindex.indexsize::real/_all_history_since_reindex.estimated_tuples::real
     ),
     _current_state AS (
