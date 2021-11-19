@@ -99,7 +99,7 @@ BEGIN
    CREATE UNIQUE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 
    UPDATE index_watch.config SET value='128kB' 
-   WHERE key='minimum_reliable_index_size' AND value<'128kB';
+   WHERE key='minimum_reliable_index_size' AND pg_size_bytes(value)<pg_size_bytes('128kB');
    
    WITH 
     _last_reindex_values AS (
