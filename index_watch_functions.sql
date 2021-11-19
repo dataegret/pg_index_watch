@@ -326,11 +326,10 @@ RETURNS VOID
 AS
 $BODY$
 BEGIN
-  INSERT INTO index_watch.index_current_state AS i
-  (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
-  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, NULL
-  FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
-  WHERE
+  WITH _actual_indexes AS (
+     SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples
+     FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
+     WHERE
       (
         indexsize >= pg_size_bytes(index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_size_threshold'))
         AND 
@@ -338,9 +337,21 @@ BEGIN
         --AND
         --index_watch.get_setting (for future configurability)
       )
+  ),
+  _old_indexes AS (
+      DELETE FROM index_watch.index_current_state AS i 
+      WHERE NOT EXISTS (SELECT FROM _actual_indexes
+         WHERE i.datname=_actual_indexes.datname AND i.schemaname=_actual_indexes.schemaname 
+         AND i.relname=_actual_indexes.relname AND indexrelname=_actual_indexes.indexrelname)
+  )
+  INSERT INTO index_watch.index_current_state AS i
+  (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
+    SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, NULL
+    FROM _actual_indexes
     ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
     UPDATE SET 
-      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real), mtime=now();
+      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, 
+      best_ratio=least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real), mtime=now();
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -437,7 +448,11 @@ BEGIN
   INSERT INTO index_watch.index_current_state 
   (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
   VALUES (_datname, _schemaname, _relname, _indexrelname, _indexsize_after, _estimated_tuples, 
-    _indexsize_after::real/_estimated_tuples::real) 
+    CASE 
+      WHEN _indexsize_after > pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'minimum_reliable_index_size')) THEN _indexsize_after::real/_estimated_tuples::real
+      ELSE NULL
+    END
+    )
     ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
     UPDATE SET 
       indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=EXCLUDED.best_ratio, mtime=now();
