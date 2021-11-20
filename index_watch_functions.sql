@@ -349,26 +349,27 @@ BEGIN
         AND (_relname IS NULL      OR i.relname=_relname)
         AND (_indexrelname IS NULL OR i.indexrelname=_indexrelname)
   )
+  --todo: think of use database+OID instead of (datname, schemaname, relname, indexrelname) for index identification in the future
+  --todo: do something with ugly code duplication in index_watch._reindex_index and index_watch._record_indexes_info
   INSERT INTO index_watch.index_current_state AS i
   (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
-    --if an index is new for the system - we cannot estimate best_ratio (we dont' have required info)
-    --if an index had been deleted someday and than recreated again few days later - we should treat it as new index
-    --todo: think of use database+OID instead of (datname, schemaname, relname, indexrelname) for index identification in the future
-    SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, NULL
-    FROM _actual_indexes
-    ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
-    UPDATE SET 
-        indexsize=EXCLUDED.indexsize, 
-        estimated_tuples=EXCLUDED.estimated_tuples,
-        --if the new index size less than minimum_reliable_index_size - we cannot use it's size and tuples as reliable gauge for the best_ratio
-        --so keep old best_ratio value instead
-        best_ratio=
-            CASE 
-            WHEN (EXCLUDED.indexsize > pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
-	        THEN least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
-            ELSE i.best_ratio
-            END, 
-        mtime=now();
+  --best_ratio estimation are NULL for the NEW index entries because we don't have any bloat information for it
+  SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples,
+    NULL AS best_ratio
+  FROM _actual_indexes
+  ON CONFLICT (datname, schemaname, relname, indexrelname)
+  DO UPDATE SET
+    mtime=now(),
+    indexsize=EXCLUDED.indexsize,
+    estimated_tuples=EXCLUDED.estimated_tuples,
+    best_ratio=
+      CASE WHEN (EXCLUDED.indexsize < pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
+      --if the new index size less than minimum_reliable_index_size - we cannot use it's size and tuples as reliable gauge for the best_ratio
+      --so keep old best_ratio value instead as best guess
+      THEN i.best_ratio
+      -- set best_value as least from current value and new one
+      ELSE least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
+      END;
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -484,18 +485,30 @@ BEGIN
   
   --update current_state... insert action here not possible in normal course of action 
   --but better keep it as possible option in case of someone decide to call _reindex_index directly
-  INSERT INTO index_watch.index_current_state 
+  --todo: do something with ugly code duplication in index_watch._reindex_index and index_watch._record_indexes_info
+  INSERT INTO index_watch.index_current_state AS i
   (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
-  VALUES (_datname, _schemaname, _relname, _indexrelname, _indexsize_after, _estimated_tuples, 
-    --if index size after reindex too small (less than minimum_reliable_index_size) we cannot use it to gauge best_ratio
-    CASE 
-      WHEN _indexsize_after > pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'minimum_reliable_index_size')) THEN _indexsize_after::real/_estimated_tuples::real
-      ELSE NULL
+  VALUES (_datname, _schemaname, _relname, _indexrelname, _indexsize_after, _estimated_tuples,
+    CASE
+    WHEN _indexsize_after < pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'minimum_reliable_index_size'))
+    --if index size after reindex are too small (less than minimum_reliable_index_size) we cannot use it to estimate best_ratio
+    THEN NULL
+    ELSE _indexsize_after::real/_estimated_tuples::real
     END
-    )
-    ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
-    UPDATE SET 
-      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, best_ratio=EXCLUDED.best_ratio, mtime=now();
+  )
+  ON CONFLICT (datname, schemaname, relname, indexrelname)
+  DO UPDATE SET
+    mtime=now(),
+    indexsize=EXCLUDED.indexsize,
+    estimated_tuples=EXCLUDED.estimated_tuples,
+    best_ratio=
+      CASE WHEN (EXCLUDED.indexsize < pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
+      --if the new index size less than minimum_reliable_index_size - we cannot use it's size and tuples as reliable gauge for the best_ratio
+      --so keep old best_ratio value instead as best guess
+      THEN i.best_ratio
+      -- else set new best_value uncoditionally
+      ELSE EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real
+      END;
   RETURN;
 END;
 $BODY$
