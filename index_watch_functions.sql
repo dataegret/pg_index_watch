@@ -17,7 +17,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.17';
+    RETURN '0.18';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -262,8 +262,11 @@ AS
 $BODY$
 BEGIN
     RETURN QUERY SELECT 
-      _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexsize,
-      CASE WHEN relpages=0 THEN greatest(1, indexreltuples) ELSE (relsize::real/(relpages::real*current_setting('block_size')::real)*indexreltuples::real)::BIGINT END AS estimated_tuples
+      _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexsize
+      -- zero tuples clamp up 1 tuple (or bloat estimates will be infinity with all division by zero fun in multiple places)
+      , greatest (1, indexreltuples)
+      -- don't do relsize/relpage correction, that logic found to be way  too smart for his own good
+      -- greatest (1, (CASE WHEN relpages=0 THEN indexreltuples ELSE relsize*indexreltuples/(relpages*current_setting('block_size')) END AS estimated_tuples))
     FROM
     dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
     $SQL$
@@ -271,9 +274,7 @@ BEGIN
           n.nspname AS schemaname
         , c.relname
         , i.relname AS indexrelname
-        , c.relpages::BIGINT AS relpages
         , i.reltuples::BIGINT AS indexreltuples
-        , pg_catalog.pg_relation_size(c.oid)::BIGINT AS relsize 
         , pg_catalog.pg_relation_size(i.oid)::BIGINT AS indexsize        
         --debug only
         --, pg_namespace.nspname
@@ -307,7 +308,7 @@ BEGIN
       --ORDER by 1,2,3
     $SQL$
     )
-    AS _res(schemaname name, relname name, indexrelname name, relpages BIGINT, indexreltuples BIGINT, relsize BIGINT, indexsize BIGINT)
+    AS _res(schemaname name, relname name, indexrelname name, indexreltuples BIGINT, indexsize BIGINT)
     WHERE 
     (_schemaname IS NULL   OR _res.schemaname=_schemaname)
     AND
@@ -326,32 +327,48 @@ RETURNS VOID
 AS
 $BODY$
 BEGIN
+  --merge index data fetched from the database and index_current_state
+  --now keep info about all potentially interesting indexes (even small ones)
+  --we can do it now because we keep exactly one entry in index_current_state per index (without history)
   WITH _actual_indexes AS (
      SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples
      FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
-     WHERE
-      (
-        indexsize >= pg_size_bytes(index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_size_threshold'))
-        AND 
-        index_watch.get_setting(datname, schemaname, relname, indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
-        --AND
-        --index_watch.get_setting (for future configurability)
-      )
   ),
   _old_indexes AS (
-      DELETE FROM index_watch.index_current_state AS i 
-      WHERE NOT EXISTS (SELECT FROM _actual_indexes
-         WHERE i.datname=_actual_indexes.datname AND i.schemaname=_actual_indexes.schemaname 
-         AND i.relname=_actual_indexes.relname AND indexrelname=_actual_indexes.indexrelname)
+       DELETE FROM index_watch.index_current_state AS i 
+       WHERE NOT EXISTS (
+           SELECT FROM _actual_indexes
+           WHERE
+               i.datname=_actual_indexes.datname 
+	       AND i.schemaname=_actual_indexes.schemaname 
+               AND i.relname=_actual_indexes.relname 
+	       AND indexrelname=_actual_indexes.indexrelname
+        )
+    	AND i.datname=_datname
+        AND (_schemaname IS NULL   OR i.schemaname=_schemaname)
+        AND (_relname IS NULL      OR i.relname=_relname)
+        AND (_indexrelname IS NULL OR i.indexrelname=_indexrelname)
   )
   INSERT INTO index_watch.index_current_state AS i
   (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
+    --if an index is new for the system - we cannot estimate best_ratio (we dont' have required info)
+    --if an index had been deleted someday and than recreated again few days later - we should treat it as new index
+    --todo: think of use database+OID instead of (datname, schemaname, relname, indexrelname) for index identification in the future
     SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, NULL
     FROM _actual_indexes
     ON CONFLICT (datname, schemaname, relname, indexrelname) DO 
     UPDATE SET 
-      indexsize=EXCLUDED.indexsize, estimated_tuples=EXCLUDED.estimated_tuples, 
-      best_ratio=least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real), mtime=now();
+        indexsize=EXCLUDED.indexsize, 
+        estimated_tuples=EXCLUDED.estimated_tuples,
+        --if the new index size less than minimum_reliable_index_size - we cannot use it's size and tuples as reliable gauge for the best_ratio
+        --so keep old best_ratio value instead
+        best_ratio=
+            CASE 
+            WHEN (EXCLUDED.indexsize > pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
+	        THEN least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
+            ELSE i.best_ratio
+            END, 
+        mtime=now();
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -373,6 +390,16 @@ BEGIN
             AND reindex_history.relname=age_limit.relname
             AND reindex_history.indexrelname=age_limit.indexrelname
             AND reindex_history.entry_timestamp<age_limit.max_age;
+    --clean index_current_state for not existing databases
+    DELETE FROM index_watch.index_current_state WHERE datname NOT IN (
+      SELECT datname FROM pg_database
+      WHERE
+        NOT datistemplate
+        AND datallowconn
+        AND datname<>current_database()
+        AND index_watch.get_setting(datname, NULL, NULL, NULL, 'skip')::boolean IS DISTINCT FROM TRUE
+    );
+
     RETURN;
 END;
 $BODY$
@@ -387,12 +414,20 @@ AS
 $BODY$
 BEGIN
   PERFORM index_watch._check_structure_version();
-  -- compare current index size per tuple with the best result since reindex value (including just after reindex data from reindex_history)
+  -- compare current size to tuples ratio with the the best value
   RETURN QUERY 
   SELECT _datname, i.schemaname, i.relname, i.indexrelname, i.indexsize,
   (i.indexsize::real/(i.best_ratio*estimated_tuples::real)) AS estimated_bloat
   FROM index_watch.index_current_state AS i
-  WHERE i.datname = _datname AND i.indexsize > pg_size_bytes(index_watch.get_setting(_datname, i.schemaname, i.relname, i.indexrelname, 'minimum_reliable_index_size'));
+  WHERE i.datname = _datname
+    --skip too small indexes to have any interest
+    AND i.indexsize >= pg_size_bytes(index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'index_size_threshold'))
+    --skip indexes set to skip
+    AND index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
+    -- AND index_watch.get_setting (for future configurability)
+  --NULLS FIRST because indexes listed with NULL in estimated bloat going to be reindexed on next cron run
+  --start from maximum bloated indexes
+  ORDER BY estimated_bloat DESC NULLS FIRST;
 END;
 $BODY$
 LANGUAGE plpgsql STRICT;
@@ -415,7 +450,8 @@ BEGIN
 
   --RAISE NOTICE 'working with %.%.% %', _datname, _schemaname, _relname, _indexrelname;
 
-  --get initial index size
+  --get initial actual index size and verify that the index indeed exists in the target database
+  --PS: english articles are driving me mad periodically
   SELECT indexsize INTO _indexsize_before
   FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname);
   --index doesn't exist anymore
@@ -423,7 +459,7 @@ BEGIN
     RETURN;
   END IF;
   
-  --time to dance
+  --perform reindex index
   _timestamp := pg_catalog.clock_timestamp ();
   PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'REINDEX INDEX CONCURRENTLY '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_indexrelname));
   _reindex_duration := pg_catalog.clock_timestamp ()-_timestamp;
@@ -445,9 +481,13 @@ BEGIN
   (datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples, reindex_duration, analyze_duration)
   VALUES 
   (_datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples, _reindex_duration, _analyze_duration);
+  
+  --update current_state... insert action here not possible in normal course of action 
+  --but better keep it as possible option in case of someone decide to call _reindex_index directly
   INSERT INTO index_watch.index_current_state 
   (datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
   VALUES (_datname, _schemaname, _relname, _indexrelname, _indexsize_after, _estimated_tuples, 
+    --if index size after reindex too small (less than minimum_reliable_index_size) we cannot use it to gauge best_ratio
     CASE 
       WHEN _indexsize_after > pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'minimum_reliable_index_size')) THEN _indexsize_after::real/_estimated_tuples::real
       ELSE NULL
@@ -470,8 +510,13 @@ DECLARE
   _index RECORD;
 BEGIN
   PERFORM index_watch._check_structure_version();
+  
   FOR _index IN 
     SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_bloat
+    -- index_size_threshold check logic moved to get_index_bloat_estimates
+    -- force switch mean ignore index_rebuild_scale_factor and reindex all suitable indexes
+    -- indexes too small (less than index_size_threshold) or manually set to skip in config will be ignored even with force switch
+    -- todo: think about it someday
     FROM index_watch.get_index_bloat_estimates(_datname)
     WHERE
       (_schemaname IS NULL OR schemaname=_schemaname)
@@ -481,18 +526,10 @@ BEGIN
       (_indexrelname IS NULL OR indexrelname=_indexrelname)
       AND
       (_force OR 
-        (
           (
-            estimated_bloat IS NULL OR 
-            estimated_bloat >= index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_rebuild_scale_factor')::float
+              estimated_bloat IS NULL 
+              OR estimated_bloat >= index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_rebuild_scale_factor')::float
           )
-          AND
-          indexsize >= pg_size_bytes(index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_size_threshold'))
-          AND 
-          index_watch.get_setting(datname, schemaname, relname, indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
-          --AND
-          --index_watch.get_setting (for future configurability)
-        )
       )
     LOOP
        PERFORM index_watch._reindex_index(_index.datname, _index.schemaname, _index.relname, _index.indexrelname);
@@ -546,8 +583,10 @@ BEGIN
         AND index_watch.get_setting(datname, NULL, NULL, NULL, 'skip')::boolean IS DISTINCT FROM TRUE
       ORDER BY datname
     LOOP
+      --update current state of ALL indexes in target database
       PERFORM index_watch._record_indexes_info(_datname, NULL, NULL, NULL);
       COMMIT;
+      --if real_run isn't set - do nothing else
       IF (real_run) THEN      
         CALL index_watch.do_reindex(_datname, NULL, NULL, NULL, FALSE);
         COMMIT;
@@ -565,4 +604,5 @@ LANGUAGE plpgsql;
         
       
       
+
 
