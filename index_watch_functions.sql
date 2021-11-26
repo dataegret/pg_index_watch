@@ -17,7 +17,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.18';
+    RETURN '0.19';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -148,6 +148,121 @@ BEGIN
 END;
 $BODY$
 LANGUAGE plpgsql;
+
+
+
+CREATE OR REPLACE FUNCTION index_watch._remote_get_indexes_indexrelid(_datname name)
+RETURNS TABLE(datname name, schemaname name, relname name, indexrelname name, indexrelid OID) 
+AS
+$BODY$
+BEGIN
+    RETURN QUERY SELECT 
+      _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexrelid
+    FROM
+    dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
+    $SQL$
+      SELECT
+          n.nspname AS schemaname
+        , c.relname
+        , i.relname AS indexrelname
+        , x.indexrelid
+      FROM pg_index x
+      JOIN pg_catalog.pg_class c           ON c.oid = x.indrelid
+      JOIN pg_catalog.pg_class i           ON i.oid = x.indexrelid
+      JOIN pg_catalog.pg_namespace n       ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_am a              ON a.oid = i.relam
+      --toast indexes info
+      LEFT JOIN pg_catalog.pg_class c1     ON c1.reltoastrelid = c.oid AND n.nspname = 'pg_toast'
+      LEFT JOIN pg_catalog.pg_namespace n1 ON c1.relnamespace = n1.oid 
+      
+      WHERE 
+      TRUE
+      --limit reindex for indexes on tables/mviews/toast
+      --AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
+      --limit reindex for indexes on tables/mviews (skip topast until bugfix of BUG #17268)
+      AND c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])
+      --ignore exclusion constraints
+      AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
+      --ignore indexes for system tables and index_watch own tables
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
+      --ignore indexes on toast tables of system tables and index_watch own tables
+      AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
+      --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%40postgresql.org
+      AND a.amname NOT IN ('brin')
+      
+      --debug only     
+      --ORDER by 1,2,3
+    $SQL$
+    )
+    AS _res(schemaname name, relname name, indexrelname name, indexrelid OID)
+    ;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+
+CREATE OR REPLACE FUNCTION index_watch._record_indexes_indexrelid(_datname name, _schemaname name, _relname name, _indexrelname name) 
+RETURNS VOID 
+AS
+$BODY$
+BEGIN
+  --merge index data fetched from the database and index_current_state
+  --now keep info about all potentially interesting indexes (even small ones)
+  --we can do it now because we keep exactly one entry in index_current_state per index (without history)
+  WITH _actual_indexes AS (
+     SELECT schemaname, relname, indexrelname, indexrelid
+     FROM index_watch._remote_get_indexes_indexrelid(_datname)
+  ),
+  UPDATE index_watch.index_current_state AS i 
+     SET indexrelid=_actual_indexes.indexrelid
+     FROM _actual_indexes
+         WHERE
+              i.schemaname=_actual_indexes.schemaname 
+          AND i.relname=_actual_indexes.relname 
+          AND indexrelname=_actual_indexes.indexrelname
+          AND i.datname=_datname;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+
+--update table structure version from 3 to 4
+CREATE OR REPLACE FUNCTION index_watch._structure_version_3_4() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   ALTER TABLE index_watch.reindex_history 
+      ADD COLUMN indexrelid OID;
+   CREATE INDEX reindex_history_oid_index on index_watch.reindex_history(datname, indexrelid);
+
+   ALTER TABLE index_watch.index_current_state 
+      ADD COLUMN indexrelid OID;
+   CREATE UNIQUE INDEX index_current_state_oid_index on index_watch.index_current_state(datname, indexrelid);
+
+   -- add indexrelid values into index_current_state
+   FOR _datname IN 
+     SELECT datname FROM pg_database 
+     WHERE 
+       NOT datistemplate 
+       AND datallowconn 
+       AND index_watch.get_setting(datname, NULL, NULL, NULL, 'skip')::boolean IS DISTINCT FROM TRUE
+     ORDER BY datname
+   LOOP
+     --update current state of ALL indexes in target database
+     PERFORM index_watch._record_indexes_indexrelid(_datname, NULL, NULL, NULL);
+     COMMIT;
+   END FOR;
+   DELETE FROM index_watch.index_current_state WHERE indexrelid IS NULL;
+   ALTER TABLE index_watch.index_current_state ALTER TABLE indexrelid ADD NOT NULL;
+
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
 
 
 --convert patterns from psql format to like format
