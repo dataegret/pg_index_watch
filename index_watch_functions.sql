@@ -202,17 +202,6 @@ LANGUAGE plpgsql;
 
 
 
-CREATE OR REPLACE FUNCTION index_watch._record_indexes_indexrelid(_datname name, _schemaname name, _relname name, _indexrelname name) 
-RETURNS VOID 
-AS
-$BODY$
-BEGIN
-END;
-$BODY$
-LANGUAGE plpgsql;
-
-
-
 --update table structure version from 3 to 4
 CREATE OR REPLACE FUNCTION index_watch._structure_version_3_4() 
 RETURNS VOID AS
