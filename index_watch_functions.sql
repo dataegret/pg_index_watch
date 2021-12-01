@@ -216,6 +216,8 @@ BEGIN
    ALTER TABLE index_watch.index_current_state 
       ADD COLUMN indexrelid OID;
    CREATE UNIQUE INDEX index_current_state_oid_index on index_watch.index_current_state(datname, indexrelid);
+   DROP INDEX IF EXISTS index_watch.index_current_state_index;
+   CREATE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 
    -- add indexrelid values into index_current_state
    FOR _datname IN 

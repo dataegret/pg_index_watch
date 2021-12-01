@@ -30,7 +30,7 @@ CREATE TABLE index_watch.reindex_history
   analyze_duration interval not null
 );
 CREATE INDEX reindex_history_oid_index on index_watch.reindex_history(datname, indexrelid);
-
+CREATE INDEX reindex_history_index on index_watch.reindex_history(datname, schemaname, relname, indexrelname);
 
 --history of index sizes (not really neccessary to keep all this data but very useful for future analyzis of bloat trends
 CREATE TABLE index_watch.index_current_state 
@@ -47,6 +47,7 @@ CREATE TABLE index_watch.index_current_state
   best_ratio REAL
 );
 CREATE UNIQUE INDEX index_current_state_oid_index on index_watch.index_current_state(datname, indexrelid);
+CREATE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 
 --settings table
 CREATE TABLE index_watch.config
