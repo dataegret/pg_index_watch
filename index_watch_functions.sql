@@ -353,7 +353,7 @@ $BODY$
 LANGUAGE plpgsql;
 
 
-DROP FUNCTION index_watch._remote_get_indexes_info(name,name,name,name);
+DROP FUNCTION IF EXISTS index_watch._remote_get_indexes_info(name,name,name,name);
 CREATE OR REPLACE FUNCTION index_watch._remote_get_indexes_info(_datname name, _schemaname name, _relname name, _indexrelname name)
 RETURNS TABLE(datname name, indexrelid OID, schemaname name, relname name, indexrelname name, indexsize BIGINT, estimated_tuples BIGINT) 
 AS
