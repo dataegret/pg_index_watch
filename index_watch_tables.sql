@@ -18,6 +18,7 @@ CREATE TABLE index_watch.reindex_history
   id bigserial primary key,
   entry_timestamp timestamptz not null default now(),
   indexrelid OID,
+  datid OID,
   datname name not null,
   schemaname name not null,
   relname name not null,
@@ -29,7 +30,7 @@ CREATE TABLE index_watch.reindex_history
   reindex_duration interval not null,
   analyze_duration interval not null
 );
-CREATE INDEX reindex_history_oid_index on index_watch.reindex_history(datname, indexrelid);
+CREATE INDEX reindex_history_oid_index on index_watch.reindex_history(datid, indexrelid);
 CREATE INDEX reindex_history_index on index_watch.reindex_history(datname, schemaname, relname, indexrelname);
 
 --history of index sizes (not really neccessary to keep all this data but very useful for future analyzis of bloat trends
@@ -38,6 +39,7 @@ CREATE TABLE index_watch.index_current_state
   id bigserial primary key,
   mtime timestamptz not null default now(),
   indexrelid OID not null,
+  datid OID not null,
   datname name not null,
   schemaname name not null,
   relname name not null,
@@ -46,7 +48,7 @@ CREATE TABLE index_watch.index_current_state
   estimated_tuples BIGINT not null,
   best_ratio REAL
 );
-CREATE UNIQUE INDEX index_current_state_oid_index on index_watch.index_current_state(datname, indexrelid);
+CREATE UNIQUE INDEX index_current_state_oid_index on index_watch.index_current_state(datid, indexrelid);
 CREATE INDEX index_current_state_index on index_watch.index_current_state(datname, schemaname, relname, indexrelname);
 
 --settings table
@@ -96,5 +98,5 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(4);
+INSERT INTO index_watch.tables_version VALUES(5);
 
