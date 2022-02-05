@@ -384,6 +384,7 @@ END;
 $BODY$
 LANGUAGE plpgsql;
 
+
 DROP FUNCTION IF EXISTS index_watch._remote_get_indexes_info(name,name,name,name);
 CREATE OR REPLACE FUNCTION index_watch._remote_get_indexes_info(_datname name, _schemaname name, _relname name, _indexrelname name)
 RETURNS TABLE(datid OID, indexrelid OID, datname name, schemaname name, relname name, indexrelname name, indexsize BIGINT, estimated_tuples BIGINT) 
@@ -437,7 +438,8 @@ BEGIN
       --ORDER by 1,2,3
     $SQL$
     )
-    AS _res(indexrelid OID, schemaname name, relname name, indexrelname name, indexreltuples BIGINT, indexsize BIGINT), pg_database AS d
+    AS _res(indexrelid OID, schemaname name, relname name, indexrelname name, indexreltuples BIGINT, indexsize BIGINT), 
+    pg_database AS d
     WHERE 
     d.datname=_datname
     AND
