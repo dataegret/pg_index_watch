@@ -2,10 +2,22 @@
 
 DO $$
 BEGIN
-  IF (SELECT setting FROM pg_settings WHERE name='server_version_num')<'12'
+  IF current_setting('server_version_num')<'12'
   THEN
     RAISE 'This library works only for PostgreSQL 12 or higher!';
-  END IF;
+  ELSE IF (current_setting('server_version_num')::INTEGER < 120010) OR
+          (current_setting('server_version_num')::INTEGER >= 130000 AND
+           current_setting('server_version_num')::INTEGER < 130006) OR
+          (current_setting('server_version_num')::INTEGER >= 140000 AND
+           current_setting('server_version_num')::INTEGER < 140002)
+     THEN
+       RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
+   https://www.postgresql.org/message-id/E1mumI4-0001Zp-PB@gemulon.postgresql.org
+   and
+   https://www.postgresql.org/message-id/E1n8C7O-00066j-Q5@gemulon.postgresql.org', 
+      current_setting('server_version');
+    END IF;
+  END IF; 
 END; $$;
 
 
@@ -17,7 +29,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.20';
+    RETURN '0.21';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -180,8 +192,16 @@ BEGIN
       --limit reindex for indexes on tables/mviews/toast
       --AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
       --limit reindex for indexes on tables/mviews (skip topast until bugfix of BUG #17268)
-      AND c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])
-      --ignore exclusion constraints
+      AND ( (c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])) OR
+            ( (c.relkind = 't'::"char") AND (
+              ((current_setting('server_version_num')::INTEGER >= 120010) AND 
+               (current_setting('server_version_num')::INTEGER < 130000)) OR
+              ((current_setting('server_version_num')::INTEGER >= 130006) AND
+               (current_setting('server_version_num')::INTEGER < 140000)) OR
+              (current_setting('server_version_num')::INTEGER >= 140002) )
+            )
+          )
+           --ignore exclusion constraints
       AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
       --ignore indexes for system tables and index_watch own tables
       AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
@@ -713,14 +733,26 @@ $BODY$
 LANGUAGE plpgsql;
 
 
-
-CREATE OR REPLACE PROCEDURE index_watch.periodic(real_run BOOLEAN DEFAULT FALSE) AS
+DROP PROCEDURE IF EXISTS index_watch.periodic(BOOLEAN);
+CREATE OR REPLACE PROCEDURE index_watch.periodic(real_run BOOLEAN DEFAULT FALSE, force BOOLEAN DEFAULT FALSE) AS
 $BODY$
 DECLARE 
   _datname NAME;
   _id bigint;
 BEGIN
     SELECT index_watch._check_lock() INTO _id;
+    IF (current_setting('server_version_num')::INTEGER < 120010) OR
+       (current_setting('server_version_num')::INTEGER >= 130000 AND
+        current_setting('server_version_num')::INTEGER < 130006) OR
+       (current_setting('server_version_num')::INTEGER >= 140000 AND
+        current_setting('server_version_num')::INTEGER < 140002)
+    THEN
+        RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
+   https://www.postgresql.org/message-id/E1mumI4-0001Zp-PB@gemulon.postgresql.org
+   and
+   https://www.postgresql.org/message-id/E1n8C7O-00066j-Q5@gemulon.postgresql.org', 
+      current_setting('server_version');
+    END IF;
 
     PERFORM index_watch._check_update_structure_version();
     COMMIT;
@@ -741,7 +773,7 @@ BEGIN
       COMMIT;
       --if real_run isn't set - do nothing else
       IF (real_run) THEN      
-        CALL index_watch.do_reindex(_datname, NULL, NULL, NULL, FALSE);
+        CALL index_watch.do_reindex(_datname, NULL, NULL, NULL, force);
         COMMIT;
       END IF;
     END LOOP;
@@ -750,12 +782,4 @@ BEGIN
 END;
 $BODY$
 LANGUAGE plpgsql;
-
-
-        
-
-        
-      
-      
-
 
