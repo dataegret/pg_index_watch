@@ -1,15 +1,29 @@
 \set ON_ERROR_STOP
 
+CREATE OR REPLACE FUNCTION index_watch.check_pg_version_bugfixed()
+RETURNS BOOLEAN AS
+$BODY$
+BEGIN
+   IF ((current_setting('server_version_num')::INTEGER >= 120010) AND 
+               (current_setting('server_version_num')::INTEGER < 130000)) OR
+      ((current_setting('server_version_num')::INTEGER >= 130006) AND
+               (current_setting('server_version_num')::INTEGER < 140000)) OR
+      (current_setting('server_version_num')::INTEGER >= 140002) 
+      THEN RETURN TRUE;
+      ELSE RETURN FALSE;
+    END IF;
+END; 
+$BODY$
+LANGUAGE plpgsql;
+
+
+
 DO $$
 BEGIN
   IF current_setting('server_version_num')<'12'
   THEN
     RAISE 'This library works only for PostgreSQL 12 or higher!';
-  ELSE IF (current_setting('server_version_num')::INTEGER < 120010) OR
-          (current_setting('server_version_num')::INTEGER >= 130000 AND
-           current_setting('server_version_num')::INTEGER < 130006) OR
-          (current_setting('server_version_num')::INTEGER >= 140000 AND
-           current_setting('server_version_num')::INTEGER < 140002)
+  ELSE IF NOT index_watch.check_pg_version_bugfixed()
      THEN
        RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
    https://www.postgresql.org/message-id/E1mumI4-0001Zp-PB@gemulon.postgresql.org
@@ -29,7 +43,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.21';
+    RETURN '0.22';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -193,14 +207,7 @@ BEGIN
       --AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
       --limit reindex for indexes on tables/mviews (skip topast until bugfix of BUG #17268)
       AND ( (c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])) OR
-            ( (c.relkind = 't'::"char") AND (
-              ((current_setting('server_version_num')::INTEGER >= 120010) AND 
-               (current_setting('server_version_num')::INTEGER < 130000)) OR
-              ((current_setting('server_version_num')::INTEGER >= 130006) AND
-               (current_setting('server_version_num')::INTEGER < 140000)) OR
-              (current_setting('server_version_num')::INTEGER >= 140002) )
-            )
-          )
+            ( (c.relkind = 't'::"char") AND index_watch.check_pg_version_bugfixed() )
            --ignore exclusion constraints
       AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
       --ignore indexes for system tables and index_watch own tables
@@ -741,11 +748,7 @@ DECLARE
   _id bigint;
 BEGIN
     SELECT index_watch._check_lock() INTO _id;
-    IF (current_setting('server_version_num')::INTEGER < 120010) OR
-       (current_setting('server_version_num')::INTEGER >= 130000 AND
-        current_setting('server_version_num')::INTEGER < 130006) OR
-       (current_setting('server_version_num')::INTEGER >= 140000 AND
-        current_setting('server_version_num')::INTEGER < 140002)
+    IF NOT index_watch.check_pg_version_bugfixed()
     THEN
         RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
    https://www.postgresql.org/message-id/E1mumI4-0001Zp-PB@gemulon.postgresql.org
