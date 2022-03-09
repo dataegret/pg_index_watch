@@ -17,7 +17,6 @@ $BODY$
 LANGUAGE plpgsql;
 
 
-
 DO $$
 BEGIN
   IF current_setting('server_version_num')<'12'
@@ -43,7 +42,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.22';
+    RETURN '0.23';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -181,11 +180,17 @@ CREATE OR REPLACE FUNCTION index_watch._remote_get_indexes_indexrelid(_datname n
 RETURNS TABLE(datname name, schemaname name, relname name, indexrelname name, indexrelid OID) 
 AS
 $BODY$
+DECLARE
+    _use_toast_tables text;
 BEGIN
+    IF index_watch.check_pg_version_bugfixed() THEN _use_toast_tables := 'True';
+    ELSE _use_toast_tables := 'False';
+    END IF;
     RETURN QUERY SELECT 
       _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexrelid
     FROM
     dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
+    format(
     $SQL$
       SELECT
           n.nspname AS schemaname
@@ -207,19 +212,20 @@ BEGIN
       --AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
       --limit reindex for indexes on tables/mviews (skip topast until bugfix of BUG #17268)
       AND ( (c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])) OR
-            ( (c.relkind = 't'::"char") AND index_watch.check_pg_version_bugfixed() )
+            ( (c.relkind = 't'::"char") AND %s )
+          )
            --ignore exclusion constraints
       AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
       --ignore indexes for system tables and index_watch own tables
       AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
       --ignore indexes on toast tables of system tables and index_watch own tables
       AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
-      --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%40postgresql.org
+      --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
       AND a.amname NOT IN ('brin')
       
       --debug only     
       --ORDER by 1,2,3
-    $SQL$
+    $SQL$, _use_toast_tables)
     )
     AS _res(schemaname name, relname name, indexrelname name, indexrelid OID)
     ;
@@ -417,7 +423,12 @@ CREATE OR REPLACE FUNCTION index_watch._remote_get_indexes_info(_datname name, _
 RETURNS TABLE(datid OID, indexrelid OID, datname name, schemaname name, relname name, indexrelname name, indexsize BIGINT, estimated_tuples BIGINT) 
 AS
 $BODY$
+DECLARE
+   _use_toast_tables text;
 BEGIN
+    IF index_watch.check_pg_version_bugfixed() THEN _use_toast_tables := 'True';
+    ELSE _use_toast_tables := 'False';
+    END IF;
     RETURN QUERY SELECT 
       d.oid as datid, _res.indexrelid, _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexsize
       -- zero tuples clamp up 1 tuple (or bloat estimates will be infinity with all division by zero fun in multiple places)
@@ -426,7 +437,7 @@ BEGIN
       -- greatest (1, (CASE WHEN relpages=0 THEN indexreltuples ELSE relsize*indexreltuples/(relpages*current_setting('block_size')) END AS estimated_tuples))
     FROM
     dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
-    $SQL$
+    format($SQL$
       SELECT
           x.indexrelid
         , n.nspname AS schemaname
@@ -451,19 +462,21 @@ BEGIN
       --limit reindex for indexes on tables/mviews/toast
       --AND c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'm'::"char"])
       --limit reindex for indexes on tables/mviews (skip topast until bugfix of BUG #17268)
-      AND c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])
+      AND ( (c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])) OR
+            ( (c.relkind = 't'::"char") AND %s )
+          )
       --ignore exclusion constraints
       AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
       --ignore indexes for system tables and index_watch own tables
       AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
       --ignore indexes on toast tables of system tables and index_watch own tables
       AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
-      --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%40postgresql.org
+      --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
       AND a.amname NOT IN ('brin')
       
       --debug only     
       --ORDER by 1,2,3
-    $SQL$
+    $SQL$, _use_toast_tables)
     )
     AS _res(indexrelid OID, schemaname name, relname name, indexrelname name, indexreltuples BIGINT, indexsize BIGINT), 
     pg_database AS d
