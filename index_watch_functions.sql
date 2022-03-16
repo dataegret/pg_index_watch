@@ -42,7 +42,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '0.23';
+    RETURN '0.24';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -55,7 +55,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER :=5;
+  _required_version INTEGER :=6;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -72,7 +72,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER :=5;
+   _required_version INTEGER :=6;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -221,7 +221,7 @@ BEGIN
       --ignore indexes on toast tables of system tables and index_watch own tables
       AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
       --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
-      AND a.amname NOT IN ('brin')
+      AND a.amname NOT IN ('brin') AND x.indislive IS TRUE
       
       --debug only     
       --ORDER by 1,2,3
@@ -310,6 +310,19 @@ END;
 $BODY$
 LANGUAGE plpgsql;
 
+
+--update table structure version from 5 to 6
+CREATE OR REPLACE FUNCTION index_watch._structure_version_5_6() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   ALTER TABLE index_watch.index_current_state 
+      ADD COLUMN indisvalid BOOLEAN not null DEFAULT TRUE;
+   UPDATE index_watch.tables_version SET version=6;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
 
 
 
@@ -420,7 +433,7 @@ LANGUAGE plpgsql;
 
 DROP FUNCTION IF EXISTS index_watch._remote_get_indexes_info(name,name,name,name);
 CREATE OR REPLACE FUNCTION index_watch._remote_get_indexes_info(_datname name, _schemaname name, _relname name, _indexrelname name)
-RETURNS TABLE(datid OID, indexrelid OID, datname name, schemaname name, relname name, indexrelname name, indexsize BIGINT, estimated_tuples BIGINT) 
+RETURNS TABLE(datid OID, indexrelid OID, datname name, schemaname name, relname name, indexrelname name, indisvalid BOOLEAN, indexsize BIGINT, estimated_tuples BIGINT) 
 AS
 $BODY$
 DECLARE
@@ -430,7 +443,7 @@ BEGIN
     ELSE _use_toast_tables := 'False';
     END IF;
     RETURN QUERY SELECT 
-      d.oid as datid, _res.indexrelid, _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexsize
+      d.oid as datid, _res.indexrelid, _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indisvalid, _res.indexsize
       -- zero tuples clamp up 1 tuple (or bloat estimates will be infinity with all division by zero fun in multiple places)
       , greatest (1, indexreltuples)
       -- don't do relsize/relpage correction, that logic found to be way  too smart for his own good
@@ -443,6 +456,7 @@ BEGIN
         , n.nspname AS schemaname
         , c.relname
         , i.relname AS indexrelname
+        , x.indisvalid
         , i.reltuples::BIGINT AS indexreltuples
         , pg_catalog.pg_relation_size(i.oid)::BIGINT AS indexsize        
         --debug only
@@ -472,13 +486,13 @@ BEGIN
       --ignore indexes on toast tables of system tables and index_watch own tables
       AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
       --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
-      AND a.amname NOT IN ('brin')
+      AND a.amname NOT IN ('brin') AND x.indislive IS TRUE
       
       --debug only     
       --ORDER by 1,2,3
     $SQL$, _use_toast_tables)
     )
-    AS _res(indexrelid OID, schemaname name, relname name, indexrelname name, indexreltuples BIGINT, indexsize BIGINT), 
+    AS _res(indexrelid OID, schemaname name, relname name, indexrelname name, indisvalid BOOLEAN, indexreltuples BIGINT, indexsize BIGINT), 
     pg_database AS d
     WHERE 
     d.datname=_datname
@@ -504,7 +518,7 @@ BEGIN
   --now keep info about all potentially interesting indexes (even small ones)
   --we can do it now because we keep exactly one entry in index_current_state per index (without history)
   WITH _actual_indexes AS (
-     SELECT datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize, estimated_tuples
+     SELECT datid, indexrelid, datname, schemaname, relname, indexrelname, indisvalid, indexsize, estimated_tuples
      FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
   ),
   _old_indexes AS (
@@ -523,9 +537,9 @@ BEGIN
   --todo: think of use database+OID instead of (datname, schemaname, relname, indexrelname) for index identification in the future
   --todo: do something with ugly code duplication in index_watch._reindex_index and index_watch._record_indexes_info
   INSERT INTO index_watch.index_current_state AS i
-  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
+  (datid, indexrelid, datname, schemaname, relname, indexrelname, indisvalid, indexsize, estimated_tuples, best_ratio)
   --best_ratio estimation are NULL for the NEW index entries because we don't have any bloat information for it
-  SELECT datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize, estimated_tuples,
+  SELECT datid, indexrelid, datname, schemaname, relname, indexrelname, indisvalid, indexsize, estimated_tuples,
     NULL AS best_ratio
   FROM _actual_indexes
   ON CONFLICT (datid,indexrelid)
@@ -535,6 +549,7 @@ BEGIN
     schemaname=EXCLUDED.schemaname,
     relname=EXCLUDED.relname,
     indexrelname=EXCLUDED.indexrelname,
+    indisvalid=EXCLUDED.indisvalid,
     indexsize=EXCLUDED.indexsize,
     estimated_tuples=EXCLUDED.estimated_tuples,
     best_ratio=
@@ -627,6 +642,7 @@ DECLARE
   _estimated_tuples BIGINT;
   _indexrelid OID;
   _datid OID;
+  _indisvalid BOOLEAN;
 BEGIN
 
   --RAISE NOTICE 'working with %.%.% %', _datname, _schemaname, _relname, _indexrelname;
@@ -654,7 +670,7 @@ BEGIN
   END IF;
  
   --get final index size
-  SELECT datid, indexrelid, indexsize, estimated_tuples INTO STRICT _datid, _indexrelid, _indexsize_after, _estimated_tuples
+  SELECT datid, indexrelid, indisvalid, indexsize, estimated_tuples INTO STRICT _datid, _indexrelid, _indisvalid, _indexsize_after, _estimated_tuples
   FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname);
   
   --log reindex action
@@ -667,8 +683,8 @@ BEGIN
   --but better keep it as possible option in case of someone decide to call _reindex_index directly
   --todo: do something with ugly code duplication in index_watch._reindex_index and index_watch._record_indexes_info
   INSERT INTO index_watch.index_current_state AS i
-  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize, estimated_tuples, best_ratio)
-  VALUES (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indexsize_after, _estimated_tuples,
+  (datid, indexrelid, datname, schemaname, relname, indexrelname, indisvalid, indexsize, estimated_tuples, best_ratio)
+  VALUES (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indisvalid, _indexsize_after, _estimated_tuples,
     CASE
     WHEN _indexsize_after < pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'minimum_reliable_index_size'))
     --if index size after reindex are too small (less than minimum_reliable_index_size) we cannot use it to estimate best_ratio
@@ -679,6 +695,7 @@ BEGIN
   ON CONFLICT (datid, indexrelid)
   DO UPDATE SET
     mtime=now(),
+    indisvalid=EXCLUDED.indisvalid,
     indexsize=EXCLUDED.indexsize,
     estimated_tuples=EXCLUDED.estimated_tuples,
     best_ratio=
@@ -758,6 +775,9 @@ CREATE OR REPLACE PROCEDURE index_watch.periodic(real_run BOOLEAN DEFAULT FALSE,
 $BODY$
 DECLARE 
   _datname NAME;
+  _schemaname NAME;
+  _relname NAME;
+  _indexrelname NAME;
   _id bigint;
 BEGIN
     SELECT index_watch._check_lock() INTO _id;
@@ -792,6 +812,14 @@ BEGIN
         CALL index_watch.do_reindex(_datname, NULL, NULL, NULL, force);
         COMMIT;
       END IF;
+    END LOOP;
+
+    FOR _datname, _schemaname, _relname, _indexrelname IN 
+      SELECT datname, schemaname, relname, indexrelname FROM index_watch.index_current_state
+      WHERE indisvalid IS FALSE
+    LOOP
+      RAISE WARNING 'Not valid index % on %.% found in %.', 
+      _indexrelname,  _schemaname, _relname, _datname;
     END LOOP;
 
     PERFORM pg_advisory_unlock(_id);

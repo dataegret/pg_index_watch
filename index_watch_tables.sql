@@ -45,6 +45,7 @@ CREATE TABLE index_watch.index_current_state
   relname name not null,
   indexrelname name not null,
   indexsize BIGINT not null,
+  indisvalid BOOLEAN not null DEFAULT TRUE,
   estimated_tuples BIGINT not null,
   best_ratio REAL
 );
@@ -98,5 +99,5 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(5);
+INSERT INTO index_watch.tables_version VALUES(6);
 
