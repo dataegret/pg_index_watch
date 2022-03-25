@@ -613,7 +613,7 @@ BEGIN
   SELECT _datname, i.schemaname, i.relname, i.indexrelname, i.indexsize,
   (i.indexsize::real/(i.best_ratio*estimated_tuples::real)) AS estimated_bloat
   FROM index_watch.index_current_state AS i
-  WHERE i.datid = _datid
+  WHERE i.datid = _datid AND indisvalid IS TRUE
     --skip too small indexes to have any interest
     AND i.indexsize >= pg_size_bytes(index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'index_size_threshold'))
     --skip indexes set to skip
