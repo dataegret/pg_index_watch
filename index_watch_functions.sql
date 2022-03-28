@@ -613,7 +613,8 @@ BEGIN
   SELECT _datname, i.schemaname, i.relname, i.indexrelname, i.indexsize,
   (i.indexsize::real/(i.best_ratio*estimated_tuples::real)) AS estimated_bloat
   FROM index_watch.index_current_state AS i
-  WHERE i.datid = _datid AND indisvalid IS TRUE
+  WHERE i.datid = _datid 
+    -- AND indisvalid IS TRUE 
     --skip too small indexes to have any interest
     AND i.indexsize >= pg_size_bytes(index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'index_size_threshold'))
     --skip indexes set to skip
@@ -650,7 +651,8 @@ BEGIN
   --get initial actual index size and verify that the index indeed exists in the target database
   --PS: english articles are driving me mad periodically
   SELECT indexsize INTO _indexsize_before
-  FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname);
+  FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname)
+  WHERE indisvalid IS TRUE;
   --index doesn't exist anymore
   IF NOT FOUND THEN
     RETURN;
