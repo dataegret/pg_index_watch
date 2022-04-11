@@ -77,9 +77,10 @@ ALTER TABLE index_watch.config ADD CONSTRAINT inherit_check3 CHECK (schemaname  
 CREATE VIEW index_watch.history AS
   SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
        datname AS db, schemaname AS schema, relname AS table, 
-       indexrelname AS index, indexsize_before AS size_before, indexsize_after AS size_after,
+       indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before, 
+       pg_size_pretty(indexsize_after) AS size_after,
        (indexsize_before::float/indexsize_after)::numeric(12,2) AS ratio, 
-       estimated_tuples AS tuples, date_trunc('seconds', reindex_duration) AS duration 
+       pg_size_pretty(estimated_tuples) AS tuples, date_trunc('seconds', reindex_duration) AS duration 
   FROM index_watch.reindex_history ORDER BY id DESC;
 
 
@@ -99,5 +100,5 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(6);
+INSERT INTO index_watch.tables_version VALUES(7);
 

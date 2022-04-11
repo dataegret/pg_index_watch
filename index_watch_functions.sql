@@ -55,7 +55,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER :=6;
+  _required_version INTEGER := 7;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -72,7 +72,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER :=6;
+   _required_version INTEGER := 7;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -319,6 +319,29 @@ BEGIN
    ALTER TABLE index_watch.index_current_state 
       ADD COLUMN indisvalid BOOLEAN not null DEFAULT TRUE;
    UPDATE index_watch.tables_version SET version=6;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+
+--update table structure version from 6 to 7
+CREATE OR REPLACE FUNCTION index_watch._structure_version_6_7() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   DROP VIEW IF EXISTS index_watch.history;
+   CREATE VIEW index_watch.history AS
+     SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
+          datname AS db, schemaname AS schema, relname AS table, 
+          indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before, 
+          pg_size_pretty(indexsize_after) AS size_after,
+          (indexsize_before::float/indexsize_after)::numeric(12,2) AS ratio, 
+          pg_size_pretty(estimated_tuples) AS tuples, date_trunc('seconds', reindex_duration) AS duration 
+     FROM index_watch.reindex_history ORDER BY id DESC;
+
+   UPDATE index_watch.tables_version SET version=7;
    RETURN;
 END;
 $BODY$
