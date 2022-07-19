@@ -17,18 +17,39 @@ $BODY$
 LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION index_watch.check_pg14_version_bugfixed()
+RETURNS BOOLEAN AS
+$BODY$
+BEGIN
+  IF (current_setting('server_version_num')::INTEGER >= 140000) AND
+          (current_setting('server_version_num')::INTEGER < 140004)
+       THEN RETURN FALSE; 
+       ELSE RETURN TRUE;
+  END IF;
+END; 
+$BODY$
+LANGUAGE plpgsql;
+
+
 DO $$
 BEGIN
   IF current_setting('server_version_num')<'12'
   THEN
     RAISE 'This library works only for PostgreSQL 12 or higher!';
-  ELSE IF NOT index_watch.check_pg_version_bugfixed()
-     THEN
+  ELSE 
+    IF NOT index_watch.check_pg_version_bugfixed()
+    THEN
        RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
    https://www.postgresql.org/message-id/E1mumI4-0001Zp-PB@gemulon.postgresql.org
    and
    https://www.postgresql.org/message-id/E1n8C7O-00066j-Q5@gemulon.postgresql.org', 
-      current_setting('server_version');
+       current_setting('server_version');
+    END IF;
+    IF NOT index_watch.check_pg14_version_bugfixed()
+      THEN
+         RAISE WARNING 'The database version % affected by PostgreSQL bug BUG #17485 which make use pg_index_watch unsafe, please update to latest minor release. For additional info please see:
+       https://www.postgresql.org/message-id/202205251144.6t4urostzc3s@alvherre.pgsql', 
+        current_setting('server_version');
     END IF;
   END IF; 
 END; $$;
@@ -59,7 +80,7 @@ DECLARE
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
-       RAISE EXCEPTION 'current tables version % is less than minimally required % for % code version, please update tables structure', _tables_version, _required_version, index_watch.version();
+       RAISE EXCEPTION 'Current tables version % is less than minimally required % for % code version, please update tables structure', _tables_version, _required_version, index_watch.version();
     END IF;
 END;
 $BODY$
@@ -805,6 +826,12 @@ DECLARE
   _indexrelname NAME;
   _id bigint;
 BEGIN
+    IF NOT index_watch.check_pg14_version_bugfixed()
+      THEN
+         RAISE 'The database version % affected by PostgreSQL bug BUG #17485 which make use pg_index_watch unsafe, please update to latest minor release. For additional info please see:
+       https://www.postgresql.org/message-id/202205251144.6t4urostzc3s@alvherre.pgsql', 
+        current_setting('server_version');
+    END IF;
     SELECT index_watch._check_lock() INTO _id;
     IF NOT index_watch.check_pg_version_bugfixed()
     THEN
