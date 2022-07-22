@@ -210,7 +210,7 @@ BEGIN
     RETURN QUERY SELECT 
       _datname, _res.schemaname, _res.relname, _res.indexrelname, _res.indexrelid
     FROM
-    dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
+    dblink(_datname,
     format(
     $SQL$
       SELECT
@@ -493,7 +493,7 @@ BEGIN
       -- don't do relsize/relpage correction, that logic found to be way  too smart for his own good
       -- greatest (1, (CASE WHEN relpages=0 THEN indexreltuples ELSE relsize*indexreltuples/(relpages*current_setting('block_size')) END AS estimated_tuples))
     FROM
-    dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$,
+    dblink(_datname,
     format($SQL$
       SELECT
           x.indexrelid
@@ -704,14 +704,14 @@ BEGIN
   
   --perform reindex index
   _timestamp := pg_catalog.clock_timestamp ();
-  PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'REINDEX INDEX CONCURRENTLY '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_indexrelname));
+  PERFORM dblink(_datname, 'REINDEX INDEX CONCURRENTLY '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_indexrelname));
   _reindex_duration := pg_catalog.clock_timestamp ()-_timestamp;
   
   --analyze 
   --skip analyze for toast tables
   IF (_schemaname != 'pg_toast') THEN
     _timestamp := clock_timestamp ();
-    PERFORM dblink('port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$, 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
+    PERFORM dblink(_datname, 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
      _analyze_duration := pg_catalog.clock_timestamp ()-_timestamp;
   END IF;
  
@@ -766,7 +766,7 @@ DECLARE
   _index RECORD;
 BEGIN
   PERFORM index_watch._check_structure_version();
-  
+
   FOR _index IN 
     SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_bloat
     -- index_size_threshold check logic moved to get_index_bloat_estimates
@@ -856,6 +856,7 @@ BEGIN
         AND index_watch.get_setting(datname, NULL, NULL, NULL, 'skip')::boolean IS DISTINCT FROM TRUE
       ORDER BY datname
     LOOP
+      PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
       --update current state of ALL indexes in target database
       PERFORM index_watch._record_indexes_info(_datname, NULL, NULL, NULL);
       COMMIT;
@@ -863,6 +864,7 @@ BEGIN
       IF (real_run) THEN      
         CALL index_watch.do_reindex(_datname, NULL, NULL, NULL, force);
         COMMIT;
+      PERFORM dblink_disconnect(_datname);
       END IF;
     END LOOP;
 
