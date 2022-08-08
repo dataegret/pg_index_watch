@@ -572,7 +572,6 @@ BEGIN
       WHERE
         NOT datistemplate
         AND datallowconn
-        --AND datname<>current_database()
         AND index_watch.get_setting(datname, NULL, NULL, NULL, 'skip')::boolean IS DISTINCT FROM TRUE
     );
 
