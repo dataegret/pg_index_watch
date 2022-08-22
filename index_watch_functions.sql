@@ -657,12 +657,7 @@ BEGIN
   (i.indexsize::real/(i.best_ratio*estimated_tuples::real)) AS estimated_bloat
   FROM index_watch.index_current_state AS i
   WHERE i.datid = _datid 
-    -- AND indisvalid IS TRUE 
-    --skip too small indexes to have any interest
-    AND i.indexsize >= pg_size_bytes(index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'index_size_threshold'))
-    --skip indexes set to skip
-    AND index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
-    -- AND index_watch.get_setting (for future configurability)
+  -- AND indisvalid IS TRUE 
   --NULLS FIRST because indexes listed with NULL in estimated bloat going to be reindexed on next cron run
   --start from maximum bloated indexes
   ORDER BY estimated_bloat DESC NULLS FIRST;
@@ -766,6 +761,9 @@ DECLARE
 BEGIN
   PERFORM index_watch._check_structure_version();
 
+  IF _datname != ANY(dblink_get_connections()) THEN
+    PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
+  END IF;
   FOR _index IN 
     SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_bloat
     -- index_size_threshold check logic moved to get_index_bloat_estimates
@@ -782,8 +780,15 @@ BEGIN
       AND
       (_force OR 
           (
-              estimated_bloat IS NULL 
-              OR estimated_bloat >= index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_rebuild_scale_factor')::float
+            --skip too small indexes to have any interest
+            indexsize >= pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'index_size_threshold'))
+            --skip indexes set to skip
+            AND index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
+            -- AND index_watch.get_setting (for future configurability)
+            AND (
+                  estimated_bloat IS NULL 
+                  OR estimated_bloat >= index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_rebuild_scale_factor')::float
+            )
           )
       )
     LOOP
