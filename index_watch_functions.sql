@@ -761,7 +761,7 @@ DECLARE
 BEGIN
   PERFORM index_watch._check_structure_version();
 
-  IF _datname != ANY(dblink_get_connections()) THEN
+  IF _datname = ANY(dblink_get_connections()) IS NOT TRUE THEN
     PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
   END IF;
   FOR _index IN 
@@ -868,8 +868,8 @@ BEGIN
       IF (real_run) THEN      
         CALL index_watch.do_reindex(_datname, NULL, NULL, NULL, force);
         COMMIT;
-      PERFORM dblink_disconnect(_datname);
       END IF;
+      PERFORM dblink_disconnect(_datname);
     END LOOP;
 
     FOR _datname, _schemaname, _relname, _indexrelname IN 
