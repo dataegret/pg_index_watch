@@ -578,7 +578,6 @@ BEGIN
         AND (_relname IS NULL      OR i.relname=_relname)
         AND (_indexrelname IS NULL OR i.indexrelname=_indexrelname)
   )
-  --todo: think of use database+OID instead of (datname, schemaname, relname, indexrelname) for index identification in the future
   --todo: do something with ugly code duplication in index_watch._reindex_index and index_watch._record_indexes_info
   INSERT INTO index_watch.index_current_state AS i
   (datid, indexrelid, datname, schemaname, relname, indexrelname, indisvalid, indexsize, estimated_tuples, best_ratio)
@@ -597,10 +596,17 @@ BEGIN
     indexsize=EXCLUDED.indexsize,
     estimated_tuples=EXCLUDED.estimated_tuples,
     best_ratio=
-      CASE WHEN (EXCLUDED.indexsize < pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
+      CASE 
       --if the new index size less than minimum_reliable_index_size - we cannot use it's size and tuples as reliable gauge for the best_ratio
       --so keep old best_ratio value instead as best guess
+      WHEN (EXCLUDED.indexsize < pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
       THEN i.best_ratio
+      --do not overrrid NULL best ratio (we don't have any reliable ratio info at this stage)
+      WHEN (i.best_ratio IS NULL)
+      THEN NULL
+      -- bugfix... if no correspoinding index_watch.reindex_history entry - there could not be reliable best_ratio info
+      WHEN (NOT EXISTS (SELECT FROM index_watch.reindex_history r WHERE r.datid=EXCLUDED.datid AND r.indexrelid=EXCLUDED.indexrelid))
+      THEN NULL	
       -- set best_value as least from current value and new one
       ELSE least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
       END;
@@ -739,9 +745,9 @@ BEGIN
     indexsize=EXCLUDED.indexsize,
     estimated_tuples=EXCLUDED.estimated_tuples,
     best_ratio=
-      CASE WHEN (EXCLUDED.indexsize < pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
       --if the new index size less than minimum_reliable_index_size - we cannot use it's size and tuples as reliable gauge for the best_ratio
       --so keep old best_ratio value instead as best guess
+      CASE WHEN (EXCLUDED.indexsize < pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
       THEN i.best_ratio
       -- else set new best_value uncoditionally
       ELSE EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real
