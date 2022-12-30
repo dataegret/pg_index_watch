@@ -1,4 +1,15 @@
-Managing index bloat with pg_index_watch.
+## what is this program for
+Некортролируемое распухание индексов на частообновляемых таблицах известная проблема PostgreSQL. 
+Встроенный autovacuum не справляется с этой проблемой ни при каких настройках.
+pg_index_watch решает эту проблему автоматически перестраивая индексы при необходимости
+
+## Where to get support
+create github issues
+or my email maxim.boguk@dataegret.com
+or telegram channel https://t.me/pg_index_watch_support
+
+
+## Managing index bloat with pg_index_watch.
 With the introduction of REINDEX CONCURRENTLY in PostgreSQL 12 there was no longer a need for a safe rebuild of indexes without any locks.
 Despite that, the question remained - based on which criteria do we determine a bloat and whether there is a need to rebuild the index.
 pg_index_watch utilizes the relation between index size and pg_class.reltuples (that is kept up-to-date through autovacuum) to determine the extent of index bloat relative to the ideal situation of the newly built index. 
@@ -9,7 +20,7 @@ This talk will take you through my thinking that led to the development of pg_in
 — Readme for pg_index_watch –
 
 Utility for prevention of bloat on frequently updated tables.
-##Program purpose
+## Program purpose
 Uncontrollable index bloat on frequently updated tables is a known issue in PostgreSQL.
 The built-in autovacuum doesn’t deal well with bloat regardless of its settings. 
 Pg_index_watch resolves this issue by automatically rebuilding indexes when needed. 
@@ -43,12 +54,14 @@ Next, we receive a similar to autovacuum system that automatically tracks the le
 ## Installation (as PostgreSQL user)
 
 # get the code git clone
+```
 https://github.com/dataegret/pg_index_watch
 cd pg_index_watch
 #create tables’ structure
 psql -1 -d postgres -f index_watch_tables.sql
 #importing the code (stored procedures)
 psql -1 -d postgres -f index_watch_functions.sql
+```
 
 ## The initial launch
 IMPORTANT with first start ALL the indexes that are bigger than 10MB (default setting) will be rebuilt at once.  
@@ -61,27 +74,36 @@ nohup psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);" >> index_watch.
 Set up the cron daily, for example at midnight (from superuser of the database = normally postgres) or hourly if there is a high number of writes to a database. 
 
 __IMPORTANT
-It’s highly advisable to make sure that the time doesn’t coincide with pg_dump and other long maintenance tasks. ___
+It’s highly advisable to make sure that the time doesn’t coincide with pg_dump and other long maintenance tasks.
 
+```
 00 00 * * *   psql -d postgres -AtqXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);"
+```
 
-##UPDATE (from a postgres user)
+## UPDATE (from a postgres user)
+```
 cd pg_index_watch
 git pull
 #заливаем обновленный код (хранимки)
 psql -1 -d postgres -f index_watch_functions.sql
 index_watch table structure update will be performed AUTOMATICALLY if needed with the next index_watch.periodic command.
+```
 
 In the same way you can manually update the structure of the tables up to the current version (normally, this is not required):
 
+````
 psql -1 -d postgres -c "SELECT index_watch._check_update_structure_version()"
+```
 
 ## Viewing reindexing history (it is renewed during the initial launch and with launch from crons): 
+```
 psql -1 -d postgres -c "SELECT * FROM index_watch.history LIMIT 20"
+```
 
 ## review of current bloat status in  
 specific database DB_NAME:
-__Assumes that cron index_watch.periodic WORKS, otherwise data will not be updated.__
+Assumes that cron index_watch.periodic WORKS, otherwise data will not be updated.
 
+```
 psql -1 -d postgres -c "select * from index_watch.get_index_bloat_estimates('DB_NAME') order by estimated_bloat desc nulls last limit 40;"
 ```
