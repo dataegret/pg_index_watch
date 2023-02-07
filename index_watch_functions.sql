@@ -278,6 +278,7 @@ BEGIN
      SELECT DISTINCT datname FROM index_watch.index_current_state
      ORDER BY datname
    LOOP
+     PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
      --update current state of ALL indexes in target database
      WITH _actual_indexes AS (
         SELECT schemaname, relname, indexrelname, indexrelid
@@ -291,6 +292,7 @@ BEGIN
              AND i.relname=_actual_indexes.relname 
              AND i.indexrelname=_actual_indexes.indexrelname
              AND i.datname=_datname;
+     PERFORM dblink_disconnect(_datname);
    END LOOP;
    DELETE FROM index_watch.index_current_state WHERE indexrelid IS NULL;
    ALTER TABLE index_watch.index_current_state ALTER indexrelid SET NOT NULL;
