@@ -789,9 +789,9 @@ BEGIN
       (_force OR 
           (
             --skip too small indexes to have any interest
-            indexsize >= pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'index_size_threshold'))
+            indexsize >= pg_size_bytes(index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_size_threshold'))
             --skip indexes set to skip
-            AND index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
+            AND index_watch.get_setting(datname, schemaname, relname, indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
             -- AND index_watch.get_setting (for future configurability)
             AND (
                   estimated_bloat IS NULL 
