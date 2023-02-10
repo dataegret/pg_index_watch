@@ -1,7 +1,9 @@
-## what is this program for
-Некортролируемое распухание индексов на частообновляемых таблицах известная проблема PostgreSQL. 
-Встроенный autovacuum не справляется с этой проблемой ни при каких настройках.
-pg_index_watch решает эту проблему автоматически перестраивая индексы при необходимости
+Utility for automatical rebuild bloated indexes (a-la smart autovacuum to deal with index bloat) in PostgreSQL.
+
+## Program purpose
+Uncontrollable index bloat on frequently updated tables is a known issue in PostgreSQL.
+The built-in autovacuum doesn’t deal well with bloat regardless of its settings. 
+The pg_index_watch resolves this issue by automatically rebuilding indexes when needed. 
 
 ## Where to get support
 create github issues
@@ -9,47 +11,33 @@ or my email maxim.boguk@dataegret.com
 or telegram channel https://t.me/pg_index_watch_support
 
 
-## Managing index bloat with pg_index_watch.
-With the introduction of REINDEX CONCURRENTLY in PostgreSQL 12 there was no longer a need for a safe rebuild of indexes without any locks.
+## Concept
+With the introduction of REINDEX CONCURRENTLY in PostgreSQL 12 now there is safe and (almost) lock-free way to rebuild bloated indexes.
 Despite that, the question remained - based on which criteria do we determine a bloat and whether there is a need to rebuild the index.
-pg_index_watch utilizes the relation between index size and pg_class.reltuples (that is kept up-to-date through autovacuum) to determine the extent of index bloat relative to the ideal situation of the newly built index. 
-It also allows rebuilding bloated indexes of any type. 
-Furthermore, this becomes possible without the need in pgstattuple for the analysis or the index rebuild.
-This talk will take you through my thinking that led to the development of pg_index_watch, dive into details of how it works and will review use cases.
-
-— Readme for pg_index_watch –
-
-Utility for prevention of bloat on frequently updated tables.
-## Program purpose
-Uncontrollable index bloat on frequently updated tables is a known issue in PostgreSQL.
-The built-in autovacuum doesn’t deal well with bloat regardless of its settings. 
-Pg_index_watch resolves this issue by automatically rebuilding indexes when needed. 
-##Concept
-With the introduction of REINDEX CONCURRENTLY in PostgreSQL 12 there was no longer a need for a safe rebuild of indexes without any locks.
-The question remained - based on which criterion we can determine whether or not to rebuild the index, i.e. there was a need for a simple statistical model that will allow us to assess the extent to which index is bloated without the need to review index in full.
+The pg_index_watch utilizes the ratio between index size and pg_class.reltuples (which is kept up-to-date with help of autovacuum/autoanalyze) to determine the extent of index bloat relative to the ideal situation of the newly built index.
+It also allows rebuilding bloated indexes of any type without dependency on pgstattuple to estimate index bloat.
 
 pg_index_watch offers following approach to this problem:
 
 PostgreSQL allows you to access the following (and almost free of charge):
 1) number of rows in the index (in pg_class.reltuples for the index) and 2) index size.
 
-Further on, assuming that the relation of index size to the number of entries is constant (this is correct in 99.9% of cases), we can speculate that if, compared to its regular state, the relation has doubled it is most certain that the index has also doubled in size.
+Further on, assuming that the ratio of index size to the number of entries is constant (this is correct in 99.9% of cases), we can speculate that if, compared to its regular state, the ratio has doubled is is most certain that the index have bloated 2x.
 
-Next, we receive a similar to autovacuum system that automatically tracks the level of index bloat and reshuffles them as needed without the need to manually manipulate  database work.
+Next, we receive a similar to autovacuum system that automatically tracks the level of index bloat and rebuild (via REINDEX CONCURRENTLY) them as needed.
+
+
 ## Basic requirements for installation and usage:
-
-
     • PostgreSQL version 12.0 or higher
-    • Superuser access to the database with the possibility  writing cron from the current user 
+    • Superuser access to the database with the possibility writing cron from the current user 
         ◦ psql access is sufficient
         ◦ Root or sudo to PostgreSQL isn’t required
-    • Possibility of passwordless or ~/.pgpass access on behalf of superuser to all local databases (i.e. if you should be able to create  psql -U postgres -d datname out of p2 without entering the password.
-    • 
+    • Possibility of passwordless or ~/.pgpass access on behalf of superuser to all local databases
+    (i.e. if you should be able to run psql -U postgres -d datname without entering the password.)
+
 ## Recommendations 
-    • If server resources allow max_parallel_maintenance_workers=16 will need to be installed (8 is also possible).
-
-
-    • Significant wal_keep_segments (5000 is normally sufficient = 80GB)unless the wal archive is used to support streaming replication.
+    • If server resources allow set non-zero max_parallel_maintenance_workers (exact amount depends on server parameters).
+    • Significant wal_keep_segments (5000 is normally sufficient = 80GB) unless the wal archive is used to support streaming replication.
 
 ## Installation (as PostgreSQL user)
 
@@ -64,34 +52,38 @@ psql -1 -d postgres -f index_watch_functions.sql
 ```
 
 ## The initial launch
-IMPORTANT with first start ALL the indexes that are bigger than 10MB (default setting) will be rebuilt at once.  
 
-This process might take several hours on large databases sized several TB therefore I suggest performing the launch manually. After that only new large or bloated indexes will be processed.
+IMPORTANT!!! During the FIRST (and ONLY FIRST) launch ALL!! the indexes that are bigger than 10MB (default setting) will be rebuilt once.  
+This process might take several hours (or even days).
+On the large databases sized several TB therefore I suggest performing the FIRST launch manually. 
+After that only bloated indexes will be processed.
 
+```
 nohup psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);" >> index_watch.log
+```
+
 
 ## Automated work following the installation
 Set up the cron daily, for example at midnight (from superuser of the database = normally postgres) or hourly if there is a high number of writes to a database. 
 
-__IMPORTANT
-It’s highly advisable to make sure that the time doesn’t coincide with pg_dump and other long maintenance tasks.
+IMPORTANT!!! It’s highly advisable to make sure that the time doesn’t coincide with pg_dump and other long maintenance tasks.
 
 ```
 00 00 * * *   psql -d postgres -AtqXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -qt -c "CALL index_watch.periodic(TRUE);"
 ```
 
-## UPDATE (from a postgres user)
+## UPDATE to new versions (from a postgres user)
 ```
 cd pg_index_watch
 git pull
-#заливаем обновленный код (хранимки)
+#load updated codebase
 psql -1 -d postgres -f index_watch_functions.sql
-index_watch table structure update will be performed AUTOMATICALLY if needed with the next index_watch.periodic command.
+index_watch table structure update will be performed AUTOMATICALLY (if needed) with the next index_watch.periodic command.
 ```
 
-In the same way you can manually update the structure of the tables up to the current version (normally, this is not required):
+However you can manually update the structure of the tables up to the current version (normally, this is not required):
 
-````
+```
 psql -1 -d postgres -c "SELECT index_watch._check_update_structure_version()"
 ```
 
@@ -107,3 +99,9 @@ Assumes that cron index_watch.periodic WORKS, otherwise data will not be updated
 ```
 psql -1 -d postgres -c "select * from index_watch.get_index_bloat_estimates('DB_NAME') order by estimated_bloat desc nulls last limit 40;"
 ```
+
+
+## todo
+Add docmentation/howto about working with advanced settings and custom configuration of utility.
+Add support of watching the remote databases.
+Add better commentaries to code.
