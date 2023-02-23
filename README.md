@@ -36,8 +36,8 @@ Next, we receive a similar to autovacuum system that automatically tracks level 
     (i.e. you should be able to run psql -U postgres -d datname without entering the password.)
 
 ## Recommendations 
-    • If server resources allow, then set non-zero max_parallel_maintenance_workers (exact amount depends on server parameters).
-    • Set significant wal_keep_segments to 5000, which is normally sufficient for 80GB, unless the wal archive is used to support streaming replication.
+    • If server resources allow set non-zero max_parallel_maintenance_workers (exact amount depends on server parameters).
+    • To set wal_keep_segments to at least 5000, unless the wal archive is used to support streaming replication.
 
 ## Installation (as PostgreSQL user)
 
