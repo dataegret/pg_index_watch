@@ -37,7 +37,7 @@ Next, we receive a similar to autovacuum system that automatically tracks level 
 
 ## Recommendations 
     • If server resources allow, then set non-zero max_parallel_maintenance_workers (exact amount depends on server parameters).
-    • Significant wal_keep_segments (5000 is normally sufficient = 80GB) unless the wal archive is used to support streaming replication.
+    • Set significant wal_keep_segments to 5000, which is normally sufficient for 80GB, unless the wal archive is used to support streaming replication.
 
 ## Installation (as PostgreSQL user)
 
