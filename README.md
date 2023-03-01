@@ -43,7 +43,7 @@ Next, we receive a similar to autovacuum system that automatically tracks level 
 
 # get the code git clone
 ```
-https://github.com/dataegret/pg_index_watch
+git clone https://github.com/dataegret/pg_index_watch
 cd pg_index_watch
 #create tables’ structure
 psql -1 -d postgres -f index_watch_tables.sql
