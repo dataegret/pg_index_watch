@@ -1,5 +1,8 @@
 \set ON_ERROR_STOP
 
+--disable useless (in this particular case) NOTICE noise
+set client_min_messages to WARNING;
+
 CREATE OR REPLACE FUNCTION index_watch.check_pg_version_bugfixed()
 RETURNS BOOLEAN AS
 $BODY$
