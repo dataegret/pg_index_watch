@@ -102,25 +102,32 @@ psql -1 -d postgres -c "select * from index_watch.get_index_bloat_estimates('DB_
 
 ## list of user callable functions and arguments
 
-#FUNCTION index_watch.version() RETURNS TEXT
+### index_watch.version()
+FUNCTION index_watch.version() RETURNS TEXT
 returns installed pg_index_watch version
 
-#FUNCTION index_watch.get_setting(_datname text, _schemaname text, _relname text, _indexrelname text, _key TEXT) RETURNS TEXT
-return configuration value for given database, schema, table, index and setting name 
+### index_watch.get_setting
+FUNCTION index_watch.get_setting(_datname text, _schemaname text, _relname text, _indexrelname text, _key TEXT) RETURNS TEXT
+returns configuration value for given database, schema, table, index and setting name 
 
-#FUNCTION index_watch.set_or_replace_setting(_datname text, _schemaname text, _relname text, _indexrelname text, _key TEXT, _value text, _comment text) RETURNS VOID
+### index_watch.set_or_replace_setting
+FUNCTION index_watch.set_or_replace_setting(_datname text, _schemaname text, _relname text, _indexrelname text, _key TEXT, _value text, _comment text) RETURNS VOID
 set or replace setting value for given database, schema, table, index and setting name
 
-#FUNCTION index_watch.get_index_bloat_estimates(_datname name) RETURNS TABLE(datname name, schemaname name, relname name, indexrelname name, indexsize bigint, estimated_bloat real) 
-return table of current estimated index bloat for given database
+### index_watch.get_index_bloat_estimates
+FUNCTION index_watch.get_index_bloat_estimates(_datname name) RETURNS TABLE(datname name, schemaname name, relname name, indexrelname name, indexsize bigint, estimated_bloat real) 
+returns table of current estimated index bloat for given database
 
-#FUNCTION index_watch.do_force_populate_index_stats(_datname name, _schemaname name, _relname name, _indexrelname name) RETURNS VOID
-forced population of best index ratio for given database, schema, table, index without reindexing first
+### index_watch.do_force_populate_index_stats
+FUNCTION index_watch.do_force_populate_index_stats(_datname name, _schemaname name, _relname name, _indexrelname name) RETURNS VOID
+forced populate of best index ratio for given database, schema, table, index without mandatory reindexing (useful if new huge index just created and definitely don't have any bloat or after pg_restore and similar cases
 
-#PROCEDURE index_watch.do_reindex(_datname name, _schemaname name, _relname name, _indexrelname name, _force BOOLEAN DEFAULT FALSE) 
+### index_watch.do_reindex
+PROCEDURE index_watch.do_reindex(_datname name, _schemaname name, _relname name, _indexrelname name, _force BOOLEAN DEFAULT FALSE) 
 perform reindex of bloated indexes in given database, schema, table, index (or every suitable indexes with _force=>true)
 
-#PROCEDURE index_watch.periodic(real_run BOOLEAN DEFAULT FALSE, force BOOLEAN DEFAULT FALSE) AS
+### index_watch.periodic
+PROCEDURE index_watch.periodic(real_run BOOLEAN DEFAULT FALSE, force BOOLEAN DEFAULT FALSE) AS
 perform bloat based reindex of every accessible database in cluster
 
 
