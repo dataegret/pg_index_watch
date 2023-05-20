@@ -3,7 +3,8 @@
 --disable useless (in this particular case) NOTICE noise
 set client_min_messages to WARNING;
 
-CREATE OR REPLACE FUNCTION index_watch.check_pg_version_bugfixed()
+DROP FUNCTION IF EXISTS index_watch.check_pg_version_bugfixed();
+CREATE OR REPLACE FUNCTION index_watch._check_pg_version_bugfixed()
 RETURNS BOOLEAN AS
 $BODY$
 BEGIN
@@ -20,7 +21,8 @@ $BODY$
 LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION index_watch.check_pg14_version_bugfixed()
+DROP FUNCTION IF EXISTS index_watch.check_pg14_version_bugfixed();
+CREATE OR REPLACE FUNCTION index_watch._check_pg14_version_bugfixed()
 RETURNS BOOLEAN AS
 $BODY$
 BEGIN
@@ -40,7 +42,7 @@ BEGIN
   THEN
     RAISE 'This library works only for PostgreSQL 12 or higher!';
   ELSE 
-    IF NOT index_watch.check_pg_version_bugfixed()
+    IF NOT index_watch._check_pg_version_bugfixed()
     THEN
        RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
    https://www.postgresql.org/message-id/E1mumI4-0001Zp-PB@gemulon.postgresql.org
@@ -48,7 +50,7 @@ BEGIN
    https://www.postgresql.org/message-id/E1n8C7O-00066j-Q5@gemulon.postgresql.org', 
        current_setting('server_version');
     END IF;
-    IF NOT index_watch.check_pg14_version_bugfixed()
+    IF NOT index_watch._check_pg14_version_bugfixed()
       THEN
          RAISE WARNING 'The database version % affected by PostgreSQL bug BUG #17485 which make use pg_index_watch unsafe, please update to latest minor release. For additional info please see:
        https://www.postgresql.org/message-id/202205251144.6t4urostzc3s@alvherre.pgsql', 
@@ -66,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.00';
+    RETURN '1.01';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -207,7 +209,7 @@ $BODY$
 DECLARE
     _use_toast_tables text;
 BEGIN
-    IF index_watch.check_pg_version_bugfixed() THEN _use_toast_tables := 'True';
+    IF index_watch._check_pg_version_bugfixed() THEN _use_toast_tables := 'True';
     ELSE _use_toast_tables := 'False';
     END IF;
     RETURN QUERY SELECT 
@@ -488,7 +490,7 @@ $BODY$
 DECLARE
    _use_toast_tables text;
 BEGIN
-    IF index_watch.check_pg_version_bugfixed() THEN _use_toast_tables := 'True';
+    IF index_watch._check_pg_version_bugfixed() THEN _use_toast_tables := 'True';
     ELSE _use_toast_tables := 'False';
     END IF;
     RETURN QUERY SELECT 
@@ -557,8 +559,8 @@ $BODY$
 LANGUAGE plpgsql;
 
 
-
-CREATE OR REPLACE FUNCTION index_watch._record_indexes_info(_datname name, _schemaname name, _relname name, _indexrelname name) 
+DROP FUNCTION IF EXISTS index_watch._record_indexes_info(name, name, name, name);
+CREATE OR REPLACE FUNCTION index_watch._record_indexes_info(_datname name, _schemaname name, _relname name, _indexrelname name, _force_populate boolean DEFAULT false) 
 RETURNS VOID 
 AS
 $BODY$
@@ -586,9 +588,16 @@ BEGIN
   --todo: do something with ugly code duplication in index_watch._reindex_index and index_watch._record_indexes_info
   INSERT INTO index_watch.index_current_state AS i
   (datid, indexrelid, datname, schemaname, relname, indexrelname, indisvalid, indexsize, estimated_tuples, best_ratio)
-  --best_ratio estimation are NULL for the NEW index entries because we don't have any bloat information for it
   SELECT datid, indexrelid, datname, schemaname, relname, indexrelname, indisvalid, indexsize, estimated_tuples,
-    NULL AS best_ratio
+    CASE
+    --_force_populate=TRUE set (or write) best ratio to current ratio (except the case when index too small to be realiable estimated)
+    WHEN (_force_populate AND indexsize > pg_size_bytes(index_watch.get_setting(datname, schemaname, relname, indexrelname, 'minimum_reliable_index_size')))
+      THEN indexsize::real/estimated_tuples::real
+    --best_ratio estimation are NULL for the NEW index entries because we don't have any bloat information for it (default behavior)
+    ELSE
+      NULL 
+    END
+    AS best_ratio
   FROM _actual_indexes
   ON CONFLICT (datid,indexrelid)
   DO UPDATE SET
@@ -602,18 +611,19 @@ BEGIN
     estimated_tuples=EXCLUDED.estimated_tuples,
     best_ratio=
       CASE 
+      --_force_populate=TRUE set (or write) best ratio to current ratio (except the case when index too small to be realiable estimated) 
+      WHEN (_force_populate AND EXCLUDED.indexsize > pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
+        THEN EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real
       --if the new index size less than minimum_reliable_index_size - we cannot use it's size and tuples as reliable gauge for the best_ratio
       --so keep old best_ratio value instead as best guess
       WHEN (EXCLUDED.indexsize < pg_size_bytes(index_watch.get_setting(EXCLUDED.datname, EXCLUDED.schemaname, EXCLUDED.relname, EXCLUDED.indexrelname, 'minimum_reliable_index_size')))
-      THEN i.best_ratio
+        THEN i.best_ratio
       --do not overrrid NULL best ratio (we don't have any reliable ratio info at this stage)
       WHEN (i.best_ratio IS NULL)
-      THEN NULL
-      -- bugfix... if no correspoinding index_watch.reindex_history entry - there could not be reliable best_ratio info
-      WHEN (NOT EXISTS (SELECT FROM index_watch.reindex_history r WHERE r.datid=EXCLUDED.datid AND r.indexrelid=EXCLUDED.indexrelid))
-      THEN NULL	
+        THEN NULL
       -- set best_value as least from current value and new one
-      ELSE least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
+      ELSE
+	least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
       END;
 END;
 $BODY$
@@ -812,6 +822,23 @@ $BODY$
 LANGUAGE plpgsql;
 
 
+--user callable shell over index_watch._record_indexes_info(...  _force_populate=>TRUE)
+--use to populate index bloa info from current state without reindexing
+CREATE OR REPLACE FUNCTION index_watch.do_force_populate_index_stats(_datname name, _schemaname name, _relname name, _indexrelname name)
+RETURNS VOID
+AS
+$BODY$
+BEGIN
+  PERFORM index_watch._check_structure_version();
+  IF _datname = ANY(dblink_get_connections()) IS NOT TRUE THEN
+    PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
+  END IF;
+  PERFORM index_watch._record_indexes_info(_datname, _schemaname, _relname, _indexrelname, _force_populate=>TRUE);
+  RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
 
 CREATE OR REPLACE FUNCTION index_watch._check_lock() 
 RETURNS bigint AS
@@ -841,14 +868,14 @@ DECLARE
   _indexrelname NAME;
   _id bigint;
 BEGIN
-    IF NOT index_watch.check_pg14_version_bugfixed()
+    IF NOT index_watch._check_pg14_version_bugfixed()
       THEN
          RAISE 'The database version % affected by PostgreSQL bug BUG #17485 which make use pg_index_watch unsafe, please update to latest minor release. For additional info please see:
        https://www.postgresql.org/message-id/202205251144.6t4urostzc3s@alvherre.pgsql', 
         current_setting('server_version');
     END IF;
     SELECT index_watch._check_lock() INTO _id;
-    IF NOT index_watch.check_pg_version_bugfixed()
+    IF NOT index_watch._check_pg_version_bugfixed()
     THEN
         RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
    https://www.postgresql.org/message-id/E1mumI4-0001Zp-PB@gemulon.postgresql.org
