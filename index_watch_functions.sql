@@ -93,7 +93,7 @@ LANGUAGE plpgsql;
 
 
 
-CREATE OR REPLACE FUNCTION index_watch._check_update_structure_version() 
+CREATE OR REPLACE FUNCTION index_watch.check_update_structure_version() 
 RETURNS VOID AS
 $BODY$
 DECLARE
@@ -884,7 +884,7 @@ BEGIN
       current_setting('server_version');
     END IF;
 
-    PERFORM index_watch._check_update_structure_version();
+    PERFORM index_watch.check_update_structure_version();
     COMMIT;
     PERFORM index_watch._cleanup_old_records();
     COMMIT;

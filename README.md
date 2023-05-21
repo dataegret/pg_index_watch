@@ -84,7 +84,7 @@ index_watch table structure update will be performed AUTOMATICALLY (if needed) w
 However, you can manually update tables structure to the current version (normally, this is not required):
 
 ```
-psql -1 -d postgres -c "SELECT index_watch._check_update_structure_version()"
+psql -1 -d postgres -c "SELECT index_watch.check_update_structure_version()"
 ```
 
 ## Viewing reindexing history (it is renewed during the initial launch and with launch from crons): 
@@ -105,6 +105,10 @@ psql -1 -d postgres -c "select * from index_watch.get_index_bloat_estimates('DB_
 ### index_watch.version()
 FUNCTION index_watch.version() RETURNS TEXT
 returns installed pg_index_watch version
+
+### index_watch.check_update_structure_version()
+FUNCTION index_watch.check_update_structure_version() RETURNS VOID
+update index watch table structure to the current version
 
 ### index_watch.get_setting
 FUNCTION index_watch.get_setting(_datname text, _schemaname text, _relname text, _indexrelname text, _key TEXT) RETURNS TEXT
