@@ -89,7 +89,13 @@ INSERT INTO index_watch.config (key, value, comment) VALUES
 ('index_size_threshold', '10MB', 'ignore indexes under 10MB size unless forced entries found in history'),
 ('index_rebuild_scale_factor', '2', 'rebuild indexes by default estimated bloat over 2x'),
 ('minimum_reliable_index_size', '128kB', 'small indexes not reliable to use as gauge'),
-('reindex_history_retention_period','10 years', 'reindex history default retention period')
+('reindex_history_retention_period','10 years', 'reindex history default retention pcommenteriod')
+;
+
+--DEFAULT per any DB setting
+INSERT INTO index_watch.config (datname, schemaname, relname, indexrelname, key, value, comment) VALUES
+('*', 'repack', NULL,      NULL, 'skip', 'true', 'skip repack internal schema'),
+('*', 'pgq',    'event_*', NULL, 'skip', 'true', 'skip pgq transient tables')
 ;
 
 
