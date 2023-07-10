@@ -3,7 +3,7 @@ Utility for automatical rebuild of bloated indexes (a-la smart autovacuum to dea
 ## Program purpose
 Uncontrollable index bloat on frequently updated tables is a known issue in PostgreSQL.
 The built-in autovacuum doesn’t deal well with bloat regardless of its settings. 
-The pg_index_watch resolves this issue by automatically rebuilding indexes when needed. 
+pg_index_watch resolves this issue by automatically rebuilding indexes when needed. 
 
 ## Where to get support
 create github issue
