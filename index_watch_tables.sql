@@ -105,5 +105,16 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(7);
+INSERT INTO index_watch.tables_version VALUES(8);
 
+
+-- current proccessed index can be invalid
+CREATE TABLE index_watch.current_processed_index 
+(
+  id bigserial primary key,
+  mtime timestamptz not null default now(),
+  datname name not null,
+  schemaname name not null,
+  relname name not null,
+  indexrelname name not null
+);

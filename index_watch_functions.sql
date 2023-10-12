@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.01';
+    RETURN '1.02';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -81,7 +81,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER := 7;
+  _required_version INTEGER := 8;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -98,7 +98,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 7;
+   _required_version INTEGER := 8;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -135,7 +135,7 @@ CREATE OR REPLACE FUNCTION index_watch._structure_version_2_3()
 RETURNS VOID AS
 $BODY$
 BEGIN
-   CREATE TABLE index_watch.index_current_state 
+   CREATE TABLE IF NOT EXISTS index_watch.index_current_state 
    (
      id bigserial primary key,
      mtime timestamptz not null default now(),
@@ -196,6 +196,19 @@ BEGIN
    DROP TABLE index_watch.index_history;
    UPDATE index_watch.tables_version SET version=3;
    RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+-- set dblink connection if not exists
+CREATE OR REPLACE FUNCTION index_watch._dblink_connect_if_not(_datname NAME) RETURNS VOID AS
+$BODY$
+BEGIN
+    IF _datname = ANY(dblink_get_connections()) IS NOT TRUE THEN
+        PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
+    END IF;
+    RETURN;
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -283,7 +296,7 @@ BEGIN
      SELECT DISTINCT datname FROM index_watch.index_current_state
      ORDER BY datname
    LOOP
-     PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
+     PERFORM index_watch._dblink_connect_if_not(_datname);
      --update current state of ALL indexes in target database
      WITH _actual_indexes AS (
         SELECT schemaname, relname, indexrelname, indexrelid
@@ -375,6 +388,27 @@ END;
 $BODY$
 LANGUAGE plpgsql;
 
+
+--update table structure version from 7 to 8
+CREATE OR REPLACE FUNCTION index_watch._structure_version_7_8() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   CREATE TABLE IF NOT EXISTS index_watch.current_processed_index 
+   (
+      id bigserial primary key,
+      mtime timestamptz not null default now(),
+      datname name not null,
+      schemaname name not null,
+      relname name not null,
+      indexrelname name not null
+   );
+
+   UPDATE index_watch.tables_version SET version=8;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
 
 
 --convert patterns from psql format to like format
@@ -564,6 +598,8 @@ CREATE OR REPLACE FUNCTION index_watch._record_indexes_info(_datname name, _sche
 RETURNS VOID 
 AS
 $BODY$
+DECLARE
+  _indexrelname NAME;
 BEGIN
   --merge index data fetched from the database and index_current_state
   --now keep info about all potentially interesting indexes (even small ones)
@@ -623,8 +659,22 @@ BEGIN
         THEN NULL
       -- set best_value as least from current value and new one
       ELSE
-	least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
+  least(i.best_ratio, EXCLUDED.indexsize::real/EXCLUDED.estimated_tuples::real)
       END;
+
+  --tell about not valid indexes
+  FOR _indexrelname IN 
+    SELECT indexrelname FROM index_watch.index_current_state
+      WHERE indisvalid IS FALSE 
+      AND datname=_datname
+      AND (_schemaname IS NULL OR schemaname=_schemaname)
+      AND (_relname IS NULL OR relname=_relname)
+      AND (_indexrelname IS NULL OR indexrelname=_indexrelname)
+    LOOP
+      RAISE WARNING 'Not valid index % on %.% found in %.', 
+      _indexrelname,  _schemaname, _relname, _datname;
+    END LOOP;
+
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -783,7 +833,7 @@ BEGIN
   PERFORM index_watch._check_structure_version();
 
   IF _datname = ANY(dblink_get_connections()) IS NOT TRUE THEN
-    PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
+    PERFORM index_watch._dblink_connect_if_not(_datname);
   END IF;
   FOR _index IN 
     SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_bloat
@@ -813,7 +863,27 @@ BEGIN
           )
       )
     LOOP
+       INSERT INTO index_watch.current_processed_index(
+          datname,
+          schemaname,
+          relname,
+          indexrelname
+       )
+       VALUES (
+          _index.datname,
+          _index.schemaname,
+          _index.relname,
+          _index.indexrelname
+       );
+       COMMIT;
        PERFORM index_watch._reindex_index(_index.datname, _index.schemaname, _index.relname, _index.indexrelname);
+       COMMIT;
+       DELETE FROM index_watch.current_processed_index 
+       WHERE 
+          datname=_index.datname AND
+          schemaname=_index.schemaname AND
+          relname=_index.relname AND
+          indexrelname=_index.indexrelname;
        COMMIT;
     END LOOP;
   RETURN;
@@ -830,9 +900,7 @@ AS
 $BODY$
 BEGIN
   PERFORM index_watch._check_structure_version();
-  IF _datname = ANY(dblink_get_connections()) IS NOT TRUE THEN
-    PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
-  END IF;
+  PERFORM index_watch._dblink_connect_if_not(_datname);
   PERFORM index_watch._record_indexes_info(_datname, _schemaname, _relname, _indexrelname, _force_populate=>TRUE);
   RETURN;
 END;
@@ -853,6 +921,67 @@ BEGIN
       RAISE 'The previous launch of the index_watch.periodic is still running.';
   END IF;
   RETURN _id;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE PROCEDURE index_watch._cleanup_our_not_valid_indexes() AS
+$BODY$
+DECLARE
+  _index RECORD;
+BEGIN
+  FOR _index IN
+    SELECT datname, schemaname, relname, indexrelname FROM
+    index_watch.current_processed_index
+  LOOP
+    PERFORM index_watch._dblink_connect_if_not(_index.datname);
+    IF EXISTS (SELECT FROM dblink(_index.datname,
+           format(
+            $SQL$
+      SELECT x.indexrelid
+      FROM pg_index x
+      JOIN pg_catalog.pg_class c           ON c.oid = x.indrelid
+      JOIN pg_catalog.pg_class i           ON i.oid = x.indexrelid
+      JOIN pg_catalog.pg_namespace n       ON n.oid = c.relnamespace
+
+      WHERE
+        n.nspname = '%1$s'
+        AND c.relname = '%2$s'
+        AND i.relname = '%3$s_ccnew'
+        AND x.indisvalid IS FALSE
+        $SQL$
+    , _index.schemaname, _index.relname, _index.indexrelname)) AS _res(indexrelid OID) )
+    THEN
+      IF NOT EXISTS (SELECT FROM dblink(_index.datname,
+           format(
+            $SQL$
+        SELECT x.indexrelid
+        FROM pg_index x
+        JOIN pg_catalog.pg_class c           ON c.oid = x.indrelid
+        JOIN pg_catalog.pg_class i           ON i.oid = x.indexrelid
+        JOIN pg_catalog.pg_namespace n       ON n.oid = c.relnamespace
+
+      WHERE
+        n.nspname = '%1$s'
+        AND c.relname = '%2$s'
+        AND i.relname = '%3$s'
+        $SQL$
+    , _index.schemaname, _index.relname, _index.indexrelname)) AS _res(indexrelid OID) )
+      THEN
+        RAISE WARNING 'The invalid index %.%_ccnew exists, but no original index %.% was found in database %', _index.schemaname, _index.indexrelname, _index.schemaname, _index.indexrelname, _index.datname;
+      END IF;
+      PERFORM dblink(_index.datname, format('DROP INDEX CONCURRENTLY %I.%I_ccnew', _index.schemaname, _index.indexrelname));
+      RAISE WARNING 'The invalid index %.%_ccnew was dropped in database %', _index.schemaname, _index.indexrelname, _index.datname;
+    END IF;
+    DELETE FROM index_watch.current_processed_index
+       WHERE 
+          datname=_index.datname AND
+          schemaname=_index.schemaname AND
+          relname=_index.relname AND
+          indexrelname=_index.indexrelname;
+       COMMIT;
+  END LOOP;
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -888,6 +1017,8 @@ BEGIN
     COMMIT;
     PERFORM index_watch._cleanup_old_records();
     COMMIT;
+    CALL index_watch._cleanup_our_not_valid_indexes();
+    COMMIT;
 
     FOR _datname IN 
       SELECT datname FROM pg_database 
@@ -898,7 +1029,7 @@ BEGIN
         AND index_watch.get_setting(datname, NULL, NULL, NULL, 'skip')::boolean IS DISTINCT FROM TRUE
       ORDER BY datname
     LOOP
-      PERFORM dblink_connect(_datname, 'port='||current_setting('port')||$$ dbname='$$||_datname||$$'$$);
+      PERFORM index_watch._dblink_connect_if_not(_datname);
       --update current state of ALL indexes in target database
       PERFORM index_watch._record_indexes_info(_datname, NULL, NULL, NULL);
       COMMIT;
@@ -908,14 +1039,6 @@ BEGIN
         COMMIT;
       END IF;
       PERFORM dblink_disconnect(_datname);
-    END LOOP;
-
-    FOR _datname, _schemaname, _relname, _indexrelname IN 
-      SELECT datname, schemaname, relname, indexrelname FROM index_watch.index_current_state
-      WHERE indisvalid IS FALSE
-    LOOP
-      RAISE WARNING 'Not valid index % on %.% found in %.', 
-      _indexrelname,  _schemaname, _relname, _datname;
     END LOOP;
 
     PERFORM pg_advisory_unlock(_id);
