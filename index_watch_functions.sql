@@ -1003,7 +1003,6 @@ BEGIN
        https://www.postgresql.org/message-id/202205251144.6t4urostzc3s@alvherre.pgsql', 
         current_setting('server_version');
     END IF;
-    SELECT index_watch._check_lock() INTO _id;
     IF NOT index_watch._check_pg_version_bugfixed()
     THEN
         RAISE WARNING 'The database version % affected by PostgreSQL bugs which make use pg_index_watch potentially unsafe, please update to latest minor release. For additional info please see:
@@ -1013,6 +1012,7 @@ BEGIN
       current_setting('server_version');
     END IF;
 
+    SELECT index_watch._check_lock() INTO _id;
     PERFORM index_watch.check_update_structure_version();
     COMMIT;
     PERFORM index_watch._cleanup_old_records();
