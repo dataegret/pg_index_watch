@@ -262,7 +262,7 @@ BEGIN
       --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
       AND a.amname NOT IN ('brin') AND x.indislive IS TRUE
       --skip indexes on temp relations
-      AND relpersistence<>'t'
+      AND c.relpersistence<>'t'
       --debug only     
       --ORDER by 1,2,3
     $SQL$, _use_toast_tables)
@@ -574,7 +574,7 @@ BEGIN
       --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
       AND a.amname NOT IN ('brin') AND x.indislive IS TRUE
       --skip indexes on temp relations
-      AND relpersistence<>'t'
+      AND c.relpersistence<>'t'
       --debug only     
       --ORDER by 1,2,3
     $SQL$, _use_toast_tables)
