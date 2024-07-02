@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.02';
+    RETURN '1.03';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -253,7 +253,7 @@ BEGIN
       AND ( (c.relkind = ANY (ARRAY['r'::"char", 'm'::"char"])) OR
             ( (c.relkind = 't'::"char") AND %s )
           )
-           --ignore exclusion constraints
+      --ignore exclusion constraints
       AND NOT EXISTS (SELECT FROM pg_constraint WHERE pg_constraint.conindid=i.oid and pg_constraint.contype='x')
       --ignore indexes for system tables and index_watch own tables
       AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch')
@@ -261,7 +261,8 @@ BEGIN
       AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
       --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
       AND a.amname NOT IN ('brin') AND x.indislive IS TRUE
-      
+      --skip indexes on temp relations
+      AND relpersistence<>'t'
       --debug only     
       --ORDER by 1,2,3
     $SQL$, _use_toast_tables)
@@ -572,7 +573,8 @@ BEGIN
       AND (n1.nspname IS NULL OR n1.nspname NOT IN ('pg_catalog', 'information_schema', 'index_watch'))
       --skip BRIN indexes... please see bug BUG #17205 https://www.postgresql.org/message-id/flat/17205-42b1d8f131f0cf97%%40postgresql.org
       AND a.amname NOT IN ('brin') AND x.indislive IS TRUE
-      
+      --skip indexes on temp relations
+      AND relpersistence<>'t'
       --debug only     
       --ORDER by 1,2,3
     $SQL$, _use_toast_tables)
