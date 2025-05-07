@@ -601,7 +601,7 @@ RETURNS VOID
 AS
 $BODY$
 DECLARE
-  _indexrelname NAME;
+  index_info RECORD;
 BEGIN
   --merge index data fetched from the database and index_current_state
   --now keep info about all potentially interesting indexes (even small ones)
@@ -665,8 +665,8 @@ BEGIN
       END;
 
   --tell about not valid indexes
-  FOR _indexrelname IN 
-    SELECT indexrelname FROM index_watch.index_current_state
+  FOR index_info IN 
+    SELECT indexrelname, relname, schemaname, datname FROM index_watch.index_current_state
       WHERE indisvalid IS FALSE 
       AND datname=_datname
       AND (_schemaname IS NULL OR schemaname=_schemaname)
@@ -674,7 +674,7 @@ BEGIN
       AND (_indexrelname IS NULL OR indexrelname=_indexrelname)
     LOOP
       RAISE WARNING 'Not valid index % on %.% found in %.', 
-      _indexrelname,  _schemaname, _relname, _datname;
+      index_info.indexrelname, index_info.schemaname, index_info.relname, index_info.datname;
     END LOOP;
 
 END;
