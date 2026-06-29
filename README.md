@@ -1,5 +1,6 @@
 Utility for automatical rebuild of bloated indexes (a-la smart autovacuum to deal with index bloat) in PostgreSQL.
 
+
 ## Program purpose
 Uncontrollable index bloat on frequently updated tables is a known issue in PostgreSQL.
 The built-in autovacuum doesn’t deal well with bloat regardless of its settings. 
