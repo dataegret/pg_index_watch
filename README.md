@@ -109,15 +109,20 @@ IMPORTANT!!! It’s highly advisable to make sure that the time doesn’t coinci
 ```
 cd pg_index_watch
 git pull
-#load updated codebase
+# load updated codebase FIRST (required; migrations live in this file)
 psql -1 -d postgres -f index_watch_functions.sql
-index_watch table structure update will be performed AUTOMATICALLY (if needed) with the next index_watch.periodic command.
-```
-
-However, you can manually update tables structure to the current version (normally, this is not required):
-
-```
+# then apply table structure migrations (safe to run after every pull)
 psql -1 -d postgres -c "SELECT index_watch.check_update_structure_version()"
+```
+
+Table structure update will also be performed AUTOMATICALLY (if needed) with the next `index_watch.periodic` command, but `index_watch_functions.sql` must be loaded before that.
+
+Verify upgrade:
+
+```
+psql -1 -d postgres -c "SELECT index_watch.version();"
+psql -1 -d postgres -c "SELECT version FROM index_watch.tables_version;"
+psql -1 -d postgres -c "SELECT to_regclass('index_watch.reindex_work');"
 ```
 
 ## Viewing reindexing history (it is renewed during the initial launch and with launch from crons): 

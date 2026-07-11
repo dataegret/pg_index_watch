@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.04';
+    RETURN '1.05';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -87,6 +87,7 @@ BEGIN
     IF (_tables_version<_required_version) THEN
        RAISE EXCEPTION 'Current tables version % is less than minimally required % for % code version, please update tables structure', _tables_version, _required_version, index_watch.version();
     END IF;
+    PERFORM index_watch._ensure_reindex_work_table();
 END;
 $BODY$
 LANGUAGE plpgsql;
@@ -412,26 +413,38 @@ $BODY$
 LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION index_watch._ensure_reindex_work_table()
+RETURNS VOID AS
+$BODY$
+BEGIN
+   IF to_regclass('index_watch.reindex_work') IS NULL THEN
+      CREATE UNLOGGED TABLE index_watch.reindex_work
+      (
+        datid oid NOT NULL,
+        indexrelid oid NOT NULL,
+        datname name NOT NULL,
+        schemaname name NOT NULL,
+        relname name NOT NULL,
+        indexrelname name NOT NULL,
+        indexsize bigint NOT NULL,
+        estimated_bloat_before real,
+        estimated_bloat real
+      );
+      CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
+      CREATE INDEX reindex_work_datname_index on index_watch.reindex_work(datname, schemaname, relname, indexrelname);
+   END IF;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
 --update table structure version from 8 to 9
 CREATE OR REPLACE FUNCTION index_watch._structure_version_8_9() 
 RETURNS VOID AS
 $BODY$
 BEGIN
-   CREATE UNLOGGED TABLE IF NOT EXISTS index_watch.reindex_work
-   (
-     datid oid NOT NULL,
-     indexrelid oid NOT NULL,
-     datname name NOT NULL,
-     schemaname name NOT NULL,
-     relname name NOT NULL,
-     indexrelname name NOT NULL,
-     indexsize bigint NOT NULL,
-     estimated_bloat_before real,
-     estimated_bloat real
-   );
-   CREATE INDEX IF NOT EXISTS reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
-   CREATE INDEX IF NOT EXISTS reindex_work_datname_index on index_watch.reindex_work(datname, schemaname, relname, indexrelname);
-
+   PERFORM index_watch._ensure_reindex_work_table();
    UPDATE index_watch.tables_version SET version=9;
    RETURN;
 END;
