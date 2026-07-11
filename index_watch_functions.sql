@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.07';
+    RETURN '1.08';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -81,7 +81,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER := 10;
+  _required_version INTEGER := 11;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -99,7 +99,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 10;
+   _required_version INTEGER := 11;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -427,20 +427,45 @@ BEGIN
         relname name NOT NULL,
         indexrelname name NOT NULL,
         indexsize bigint NOT NULL,
+        indexsize_before_analyze bigint NOT NULL,
         estimated_bloat_before real,
         estimated_bloat real,
+        estimated_tuples_before_analyze bigint NOT NULL,
+        estimated_tuples_after_analyze bigint NOT NULL,
         reindex_skipped boolean NOT NULL DEFAULT false
       );
       CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
       CREATE INDEX reindex_work_datname_index on index_watch.reindex_work(datname, schemaname, relname, indexrelname);
-   ELSIF NOT EXISTS (
-      SELECT FROM information_schema.columns
-      WHERE table_schema = 'index_watch'
-        AND table_name = 'reindex_work'
-        AND column_name = 'reindex_skipped'
-   ) THEN
-      ALTER TABLE index_watch.reindex_work
-        ADD COLUMN reindex_skipped boolean NOT NULL DEFAULT false;
+   ELSE
+      IF NOT EXISTS (
+         SELECT FROM information_schema.columns
+         WHERE table_schema = 'index_watch'
+           AND table_name = 'reindex_work'
+           AND column_name = 'reindex_skipped'
+      ) THEN
+         ALTER TABLE index_watch.reindex_work
+           ADD COLUMN reindex_skipped boolean NOT NULL DEFAULT false;
+      END IF;
+      IF NOT EXISTS (
+         SELECT FROM information_schema.columns
+         WHERE table_schema = 'index_watch'
+           AND table_name = 'reindex_work'
+           AND column_name = 'indexsize_before_analyze'
+      ) THEN
+         ALTER TABLE index_watch.reindex_work
+           ADD COLUMN indexsize_before_analyze bigint,
+           ADD COLUMN estimated_tuples_before_analyze bigint,
+           ADD COLUMN estimated_tuples_after_analyze bigint;
+         UPDATE index_watch.reindex_work
+            SET indexsize_before_analyze = indexsize,
+                estimated_tuples_before_analyze = 1,
+                estimated_tuples_after_analyze = 1
+            WHERE indexsize_before_analyze IS NULL;
+         ALTER TABLE index_watch.reindex_work
+           ALTER COLUMN indexsize_before_analyze SET NOT NULL,
+           ALTER COLUMN estimated_tuples_before_analyze SET NOT NULL,
+           ALTER COLUMN estimated_tuples_after_analyze SET NOT NULL;
+      END IF;
    END IF;
    RETURN;
 END;
@@ -469,6 +494,55 @@ BEGIN
    ALTER TABLE index_watch.reindex_work
       ADD COLUMN IF NOT EXISTS reindex_skipped boolean NOT NULL DEFAULT false;
    UPDATE index_watch.tables_version SET version=10;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+--update table structure version from 10 to 11
+CREATE OR REPLACE FUNCTION index_watch._structure_version_10_11() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   ALTER TABLE index_watch.reindex_history
+      ADD COLUMN IF NOT EXISTS estimated_tuples_before_analyze bigint,
+      ADD COLUMN IF NOT EXISTS skipped boolean NOT NULL DEFAULT false;
+
+   ALTER TABLE index_watch.reindex_work
+      ADD COLUMN IF NOT EXISTS indexsize_before_analyze bigint,
+      ADD COLUMN IF NOT EXISTS estimated_tuples_before_analyze bigint,
+      ADD COLUMN IF NOT EXISTS estimated_tuples_after_analyze bigint;
+
+   UPDATE index_watch.reindex_work
+      SET indexsize_before_analyze = indexsize
+      WHERE indexsize_before_analyze IS NULL;
+
+   UPDATE index_watch.reindex_work
+      SET estimated_tuples_before_analyze = 1,
+          estimated_tuples_after_analyze = 1
+      WHERE estimated_tuples_before_analyze IS NULL
+         OR estimated_tuples_after_analyze IS NULL;
+
+   ALTER TABLE index_watch.reindex_work
+      ALTER COLUMN indexsize_before_analyze SET NOT NULL,
+      ALTER COLUMN estimated_tuples_before_analyze SET NOT NULL,
+      ALTER COLUMN estimated_tuples_after_analyze SET NOT NULL;
+
+   DROP VIEW IF EXISTS index_watch.history;
+   CREATE VIEW index_watch.history AS
+     SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
+          datname AS db, schemaname AS schema, relname AS table,
+          indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before,
+          pg_size_pretty(indexsize_after) AS size_after,
+          (indexsize_before::float/NULLIF(indexsize_after, 0))::numeric(12,2) AS ratio,
+          pg_size_pretty(estimated_tuples_before_analyze) AS tuples_before_analyze,
+          pg_size_pretty(estimated_tuples) AS tuples_after_analyze,
+          skipped,
+          date_trunc('seconds', reindex_duration) AS duration
+     FROM index_watch.reindex_history ORDER BY id DESC;
+
+   UPDATE index_watch.tables_version SET version=11;
    RETURN;
 END;
 $BODY$
@@ -803,7 +877,13 @@ LANGUAGE plpgsql STRICT;
 
 
 
-CREATE OR REPLACE FUNCTION index_watch._reindex_index(_datname name, _schemaname name, _relname name, _indexrelname name) 
+CREATE OR REPLACE FUNCTION index_watch._reindex_index(
+  _datname name,
+  _schemaname name,
+  _relname name,
+  _indexrelname name,
+  _estimated_tuples_before_analyze bigint DEFAULT NULL
+)
 RETURNS VOID 
 AS
 $BODY$
@@ -850,9 +930,9 @@ BEGIN
   
   --log reindex action
   INSERT INTO index_watch.reindex_history
-  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples, reindex_duration, analyze_duration)
+  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples_before_analyze, estimated_tuples, reindex_duration, analyze_duration, skipped)
   VALUES 
-  (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples, _reindex_duration, _analyze_duration);
+  (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples_before_analyze, _estimated_tuples, _reindex_duration, _analyze_duration, false);
   
   --update current_state... insert action here not possible in normal course of action 
   --but better keep it as possible option in case of someone decide to call _reindex_index directly
@@ -895,7 +975,6 @@ DECLARE
   _datid OID;
   _index RECORD;
   _rel RECORD;
-  _skipped RECORD;
 BEGIN
   PERFORM index_watch._check_structure_version();
   SELECT oid INTO STRICT _datid FROM pg_database WHERE datname = _datname;
@@ -908,7 +987,8 @@ BEGIN
 
   INSERT INTO index_watch.reindex_work (
     datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize,
-    estimated_bloat_before, estimated_bloat, reindex_skipped
+    indexsize_before_analyze, estimated_bloat_before, estimated_bloat,
+    estimated_tuples_before_analyze, estimated_tuples_after_analyze, reindex_skipped
   )
   SELECT
     i.datid,
@@ -918,8 +998,11 @@ BEGIN
     i.relname,
     i.indexrelname,
     i.indexsize,
+    i.indexsize,
     (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
     (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
+    i.estimated_tuples,
+    i.estimated_tuples,
     false
   FROM index_watch.index_current_state AS i
   WHERE
@@ -955,12 +1038,13 @@ BEGIN
     UPDATE index_watch.reindex_work AS w
     SET
       indexsize = i.indexsize,
-      estimated_bloat = (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real))
+      estimated_bloat = (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
+      estimated_tuples_after_analyze = i.estimated_tuples
     FROM index_watch.index_current_state AS i
     WHERE w.datid = _datid
       AND w.datid = i.datid AND w.indexrelid = i.indexrelid;
 
-    FOR _skipped IN
+    WITH skipped AS (
       UPDATE index_watch.reindex_work AS w
       SET reindex_skipped = TRUE
       WHERE w.datid = _datid
@@ -973,18 +1057,25 @@ BEGIN
           OR w.estimated_bloat >= index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'index_rebuild_scale_factor')::float
         )
       )
-      RETURNING
-        w.datname, w.schemaname, w.relname, w.indexrelname,
-        w.estimated_bloat_before, w.estimated_bloat AS bloat_after
-    LOOP
-      RAISE NOTICE 'index_watch: skipping reindex of %.%.% on % after ANALYZE (estimated bloat % -> %)',
-        _skipped.schemaname, _skipped.relname, _skipped.indexrelname, _skipped.datname,
-        coalesce(_skipped.estimated_bloat_before::text, 'NULL'), coalesce(_skipped.bloat_after::text, 'NULL');
-    END LOOP;
+      RETURNING w.*
+    )
+    INSERT INTO index_watch.reindex_history (
+      datid, indexrelid, datname, schemaname, relname, indexrelname,
+      indexsize_before, indexsize_after,
+      estimated_tuples_before_analyze, estimated_tuples,
+      reindex_duration, analyze_duration, skipped
+    )
+    SELECT
+      datid, indexrelid, datname, schemaname, relname, indexrelname,
+      indexsize_before_analyze, indexsize,
+      estimated_tuples_before_analyze, estimated_tuples_after_analyze,
+      '0s'::interval, '0s'::interval, true
+    FROM skipped;
   END IF;
 
   FOR _index IN
-    SELECT w.datname, w.schemaname, w.relname, w.indexrelname, w.indexsize, w.estimated_bloat
+    SELECT w.datname, w.schemaname, w.relname, w.indexrelname, w.indexsize, w.estimated_bloat,
+           w.estimated_tuples_before_analyze
     FROM index_watch.reindex_work AS w
     WHERE w.datid = _datid
       AND NOT w.reindex_skipped
@@ -1004,7 +1095,7 @@ BEGIN
           _index.indexrelname
        );
        COMMIT;
-       PERFORM index_watch._reindex_index(_index.datname, _index.schemaname, _index.relname, _index.indexrelname);
+       PERFORM index_watch._reindex_index(_index.datname, _index.schemaname, _index.relname, _index.indexrelname, _index.estimated_tuples_before_analyze);
        COMMIT;
        DELETE FROM index_watch.current_processed_index 
        WHERE 

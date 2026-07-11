@@ -36,24 +36,14 @@ Normal mode (`force=FALSE`, the default for `index_watch.periodic`):
 
 1. **Collect candidates** — one local read from `index_watch.index_current_state` (already populated by `index_watch.periodic` for the whole database).
 2. **Refresh statistics per table** — for each distinct table that has at least one reindex candidate, run `ANALYZE` on that table **once** (even if several of its indexes are candidates), then refresh index stats for that table only via `dblink`.
-3. **Re-evaluate candidates** — recompute estimated bloat locally from `index_current_state` and drop indexes that no longer exceed `index_rebuild_scale_factor`.
+3. **Re-evaluate candidates** — recompute estimated bloat locally from `index_current_state` and mark indexes that no longer exceed `index_rebuild_scale_factor` as skipped.
 4. **Reindex** — run `REINDEX CONCURRENTLY` only for indexes that remain in the work list.
 
-Indexes removed at step 3 are reported with `RAISE NOTICE`, for example:
-
-```
-NOTICE:  index_watch: skipping reindex of public.orders.idx_orders_created on mydb after ANALYZE (estimated bloat 2.45 -> 1.12)
-```
+Indexes skipped at step 3 are written to `index_watch.reindex_history` with `skipped=TRUE` (and `reindex_duration`/`analyze_duration` zero). Use `index_watch.history` to review them together with actual reindexes.
 
 Force mode (`force=TRUE`): the analyze/confirmation step is skipped — all suitable indexes (respecting `skip` and `index_size_threshold`) are rebuilt unconditionally, since the goal is a forced rebuild rather than bloat-based selection.
 
-To see these notices in cron logs, avoid the `-q` psql flag (it suppresses NOTICE messages), for example:
-
-```
-00 00 * * * psql -d postgres -AtXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -t -c "CALL index_watch.periodic(TRUE);" >> index_watch.log 2>&1
-```
-
-The reindex work set is stored in `index_watch.reindex_work` (unlogged table). It is truncated at the start of each `index_watch.periodic(TRUE)` run and repopulated as databases are processed. Each row keeps `estimated_bloat_before` and post-ANALYZE `estimated_bloat`. The `reindex_skipped` flag marks indexes that looked bloated before ANALYZE but no longer exceed the threshold after fresh statistics (also reported via NOTICE).
+The reindex work set is stored in `index_watch.reindex_work` (unlogged table). It is truncated at the start of each `index_watch.periodic(TRUE)` run and repopulated as databases are processed. Each row keeps `estimated_bloat_before` and post-ANALYZE `estimated_bloat`. The `reindex_skipped` flag marks indexes that looked bloated before ANALYZE but no longer exceed the threshold after fresh statistics.
 
 ```
 -- indexes that were actually reindexed
@@ -132,6 +122,9 @@ psql -1 -d postgres -c "SELECT to_regclass('index_watch.reindex_work');"
 ## Viewing reindexing history (it is renewed during the initial launch and with launch from crons): 
 ```
 psql -1 -d postgres -c "SELECT * FROM index_watch.history LIMIT 20"
+
+-- only indexes skipped after ANALYZE confirmation
+psql -1 -d postgres -c "SELECT * FROM index_watch.history WHERE skipped ORDER BY ts DESC LIMIT 20"
 ```
 
 ## review of current bloat status in  

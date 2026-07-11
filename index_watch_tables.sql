@@ -26,9 +26,11 @@ CREATE TABLE index_watch.reindex_history
   server_version_num integer not null default current_setting('server_version_num')::integer,
   indexsize_before BIGINT not null,
   indexsize_after BIGINT not null,
+  estimated_tuples_before_analyze bigint,
   estimated_tuples bigint not null,
   reindex_duration interval not null,
-  analyze_duration interval not null
+  analyze_duration interval not null,
+  skipped boolean NOT NULL DEFAULT false
 );
 CREATE INDEX reindex_history_oid_index on index_watch.reindex_history(datid, indexrelid);
 CREATE INDEX reindex_history_index on index_watch.reindex_history(datname, schemaname, relname, indexrelname);
@@ -76,11 +78,14 @@ ALTER TABLE index_watch.config ADD CONSTRAINT inherit_check3 CHECK (schemaname  
 
 CREATE VIEW index_watch.history AS
   SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
-       datname AS db, schemaname AS schema, relname AS table, 
-       indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before, 
+       datname AS db, schemaname AS schema, relname AS table,
+       indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before,
        pg_size_pretty(indexsize_after) AS size_after,
-       (indexsize_before::float/indexsize_after)::numeric(12,2) AS ratio, 
-       pg_size_pretty(estimated_tuples) AS tuples, date_trunc('seconds', reindex_duration) AS duration 
+       (indexsize_before::float/NULLIF(indexsize_after, 0))::numeric(12,2) AS ratio,
+       pg_size_pretty(estimated_tuples_before_analyze) AS tuples_before_analyze,
+       pg_size_pretty(estimated_tuples) AS tuples_after_analyze,
+       skipped,
+       date_trunc('seconds', reindex_duration) AS duration
   FROM index_watch.reindex_history ORDER BY id DESC;
 
 
@@ -109,8 +114,11 @@ CREATE UNLOGGED TABLE index_watch.reindex_work
   relname name NOT NULL,
   indexrelname name NOT NULL,
   indexsize bigint NOT NULL,
+  indexsize_before_analyze bigint NOT NULL,
   estimated_bloat_before real,
   estimated_bloat real,
+  estimated_tuples_before_analyze bigint NOT NULL,
+  estimated_tuples_after_analyze bigint NOT NULL,
   reindex_skipped boolean NOT NULL DEFAULT false
 );
 CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
@@ -123,7 +131,7 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(10);
+INSERT INTO index_watch.tables_version VALUES(11);
 
 
 -- current proccessed index can be invalid
