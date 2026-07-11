@@ -53,10 +53,14 @@ To see these notices in cron logs, avoid the `-q` psql flag (it suppresses NOTIC
 00 00 * * * psql -d postgres -AtXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -t -c "CALL index_watch.periodic(TRUE);" >> index_watch.log 2>&1
 ```
 
-The final reindex work set is stored in `index_watch.reindex_work` (unlogged table). It is truncated at the start of each `index_watch.periodic(TRUE)` run and repopulated as databases are processed; after the run it keeps the indexes that actually proceeded to reindex (with `estimated_bloat_before` and post-ANALYZE `estimated_bloat`). Indexes dropped after the ANALYZE confirmation step are not kept in this table (they are reported via NOTICE only).
+The reindex work set is stored in `index_watch.reindex_work` (unlogged table). It is truncated at the start of each `index_watch.periodic(TRUE)` run and repopulated as databases are processed. Each row keeps `estimated_bloat_before` and post-ANALYZE `estimated_bloat`. The `reindex_skipped` flag marks indexes that looked bloated before ANALYZE but no longer exceed the threshold after fresh statistics (also reported via NOTICE).
 
 ```
-psql -1 -d postgres -c "SELECT * FROM index_watch.reindex_work ORDER BY estimated_bloat DESC NULLS FIRST;"
+-- indexes that were actually reindexed
+psql -1 -d postgres -c "SELECT * FROM index_watch.reindex_work WHERE NOT reindex_skipped ORDER BY estimated_bloat DESC NULLS FIRST;"
+
+-- indexes skipped after ANALYZE confirmation
+psql -1 -d postgres -c "SELECT * FROM index_watch.reindex_work WHERE reindex_skipped ORDER BY estimated_bloat_before DESC NULLS FIRST;"
 ```
 
 

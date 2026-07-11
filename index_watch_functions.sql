@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.05';
+    RETURN '1.06';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -81,7 +81,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER := 9;
+  _required_version INTEGER := 10;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -99,7 +99,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 9;
+   _required_version INTEGER := 10;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -428,10 +428,19 @@ BEGIN
         indexrelname name NOT NULL,
         indexsize bigint NOT NULL,
         estimated_bloat_before real,
-        estimated_bloat real
+        estimated_bloat real,
+        reindex_skipped boolean NOT NULL DEFAULT false
       );
       CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
       CREATE INDEX reindex_work_datname_index on index_watch.reindex_work(datname, schemaname, relname, indexrelname);
+   ELSIF NOT EXISTS (
+      SELECT FROM information_schema.columns
+      WHERE table_schema = 'index_watch'
+        AND table_name = 'reindex_work'
+        AND column_name = 'reindex_skipped'
+   ) THEN
+      ALTER TABLE index_watch.reindex_work
+        ADD COLUMN reindex_skipped boolean NOT NULL DEFAULT false;
    END IF;
    RETURN;
 END;
@@ -446,6 +455,20 @@ $BODY$
 BEGIN
    PERFORM index_watch._ensure_reindex_work_table();
    UPDATE index_watch.tables_version SET version=9;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+--update table structure version from 9 to 10
+CREATE OR REPLACE FUNCTION index_watch._structure_version_9_10() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   ALTER TABLE index_watch.reindex_work
+      ADD COLUMN IF NOT EXISTS reindex_skipped boolean NOT NULL DEFAULT false;
+   UPDATE index_watch.tables_version SET version=10;
    RETURN;
 END;
 $BODY$
@@ -885,7 +908,7 @@ BEGIN
 
   INSERT INTO index_watch.reindex_work (
     datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize,
-    estimated_bloat_before, estimated_bloat
+    estimated_bloat_before, estimated_bloat, reindex_skipped
   )
   SELECT
     i.datid,
@@ -896,7 +919,8 @@ BEGIN
     i.indexrelname,
     i.indexsize,
     (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
-    (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real))
+    (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
+    false
   FROM index_watch.index_current_state AS i
   WHERE
     i.datid = _datid
@@ -934,8 +958,10 @@ BEGIN
     WHERE w.datid = i.datid AND w.indexrelid = i.indexrelid;
 
     FOR _skipped IN
-      DELETE FROM index_watch.reindex_work AS w
-      WHERE NOT (
+      UPDATE index_watch.reindex_work AS w
+      SET reindex_skipped = TRUE
+      WHERE NOT w.reindex_skipped
+        AND NOT (
         w.indexsize >= pg_size_bytes(index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'index_size_threshold'))
         AND index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
         AND (
@@ -956,6 +982,7 @@ BEGIN
   FOR _index IN
     SELECT w.datname, w.schemaname, w.relname, w.indexrelname, w.indexsize, w.estimated_bloat
     FROM index_watch.reindex_work AS w
+    WHERE NOT w.reindex_skipped
     ORDER BY w.estimated_bloat DESC NULLS FIRST
     LOOP
        INSERT INTO index_watch.current_processed_index(

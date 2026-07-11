@@ -110,7 +110,8 @@ CREATE UNLOGGED TABLE index_watch.reindex_work
   indexrelname name NOT NULL,
   indexsize bigint NOT NULL,
   estimated_bloat_before real,
-  estimated_bloat real
+  estimated_bloat real,
+  reindex_skipped boolean NOT NULL DEFAULT false
 );
 CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
 CREATE INDEX reindex_work_datname_index on index_watch.reindex_work(datname, schemaname, relname, indexrelname);
@@ -122,7 +123,7 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(9);
+INSERT INTO index_watch.tables_version VALUES(10);
 
 
 -- current proccessed index can be invalid
