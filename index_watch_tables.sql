@@ -99,17 +99,34 @@ INSERT INTO index_watch.config (datname, schemaname, relname, indexrelname, key,
 ;
 
 
+--work set from the latest do_reindex run (candidates that proceeded to reindex)
+CREATE UNLOGGED TABLE index_watch.reindex_work
+(
+  datid oid NOT NULL,
+  indexrelid oid NOT NULL,
+  datname name NOT NULL,
+  schemaname name NOT NULL,
+  relname name NOT NULL,
+  indexrelname name NOT NULL,
+  indexsize bigint NOT NULL,
+  estimated_bloat_before real,
+  estimated_bloat real
+);
+CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
+CREATE INDEX reindex_work_datname_index on index_watch.reindex_work(datname, schemaname, relname, indexrelname);
+
+
 --current version of table structure
 CREATE TABLE index_watch.tables_version
 (
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(8);
+INSERT INTO index_watch.tables_version VALUES(9);
 
 
 -- current proccessed index can be invalid
-CREATE TABLE index_watch.current_processed_index 
+CREATE TABLE index_watch.current_processed_index
 (
   id bigserial primary key,
   mtime timestamptz not null default now(),

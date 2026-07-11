@@ -53,6 +53,12 @@ To see these notices in cron logs, avoid the `-q` psql flag (it suppresses NOTIC
 00 00 * * * psql -d postgres -AtXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -t -c "CALL index_watch.periodic(TRUE);" >> index_watch.log 2>&1
 ```
 
+The final reindex work set is stored in `index_watch.reindex_work` (unlogged table). It is truncated at the start of each `index_watch.periodic(TRUE)` run and repopulated as databases are processed; after the run it keeps the indexes that actually proceeded to reindex (with `estimated_bloat_before` and post-ANALYZE `estimated_bloat`). Indexes dropped after the ANALYZE confirmation step are not kept in this table (they are reported via NOTICE only).
+
+```
+psql -1 -d postgres -c "SELECT * FROM index_watch.reindex_work ORDER BY estimated_bloat DESC NULLS FIRST;"
+```
+
 
 ## Basic requirements for installation and usage:
     • PostgreSQL version 12.0 or higher

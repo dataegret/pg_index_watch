@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.03';
+    RETURN '1.04';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -81,7 +81,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER := 8;
+  _required_version INTEGER := 9;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -98,7 +98,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 8;
+   _required_version INTEGER := 9;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -406,6 +406,33 @@ BEGIN
    );
 
    UPDATE index_watch.tables_version SET version=8;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+--update table structure version from 8 to 9
+CREATE OR REPLACE FUNCTION index_watch._structure_version_8_9() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   CREATE UNLOGGED TABLE IF NOT EXISTS index_watch.reindex_work
+   (
+     datid oid NOT NULL,
+     indexrelid oid NOT NULL,
+     datname name NOT NULL,
+     schemaname name NOT NULL,
+     relname name NOT NULL,
+     indexrelname name NOT NULL,
+     indexsize bigint NOT NULL,
+     estimated_bloat_before real,
+     estimated_bloat real
+   );
+   CREATE INDEX IF NOT EXISTS reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
+   CREATE INDEX IF NOT EXISTS reindex_work_datname_index on index_watch.reindex_work(datname, schemaname, relname, indexrelname);
+
+   UPDATE index_watch.tables_version SET version=9;
    RETURN;
 END;
 $BODY$
@@ -841,21 +868,9 @@ BEGIN
     PERFORM index_watch._dblink_connect_if_not(_datname);
   END IF;
 
-  CREATE TEMP TABLE IF NOT EXISTS _iw_reindex_work (
-    datid oid NOT NULL,
-    indexrelid oid NOT NULL,
-    datname name NOT NULL,
-    schemaname name NOT NULL,
-    relname name NOT NULL,
-    indexrelname name NOT NULL,
-    indexsize bigint NOT NULL,
-    estimated_bloat_before real,
-    estimated_bloat real
-  ) ON COMMIT PRESERVE ROWS;
+  DELETE FROM index_watch.reindex_work WHERE datname = _datname;
 
-  TRUNCATE _iw_reindex_work;
-
-  INSERT INTO _iw_reindex_work (
+  INSERT INTO index_watch.reindex_work (
     datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize,
     estimated_bloat_before, estimated_bloat
   )
@@ -889,7 +904,7 @@ BEGIN
   IF NOT _force THEN
     FOR _rel IN
       SELECT DISTINCT w.schemaname, w.relname
-      FROM _iw_reindex_work AS w
+      FROM index_watch.reindex_work AS w
       WHERE w.schemaname <> 'pg_toast'
       ORDER BY w.schemaname, w.relname
     LOOP
@@ -898,7 +913,7 @@ BEGIN
       COMMIT;
     END LOOP;
 
-    UPDATE _iw_reindex_work AS w
+    UPDATE index_watch.reindex_work AS w
     SET
       indexsize = i.indexsize,
       estimated_bloat = (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real))
@@ -906,7 +921,7 @@ BEGIN
     WHERE w.datid = i.datid AND w.indexrelid = i.indexrelid;
 
     FOR _skipped IN
-      DELETE FROM _iw_reindex_work AS w
+      DELETE FROM index_watch.reindex_work AS w
       WHERE NOT (
         w.indexsize >= pg_size_bytes(index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'index_size_threshold'))
         AND index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
@@ -927,7 +942,7 @@ BEGIN
 
   FOR _index IN
     SELECT w.datname, w.schemaname, w.relname, w.indexrelname, w.indexsize, w.estimated_bloat
-    FROM _iw_reindex_work AS w
+    FROM index_watch.reindex_work AS w
     ORDER BY w.estimated_bloat DESC NULLS FIRST
     LOOP
        INSERT INTO index_watch.current_processed_index(
@@ -1086,6 +1101,11 @@ BEGIN
     COMMIT;
     CALL index_watch._cleanup_our_not_valid_indexes();
     COMMIT;
+
+    IF real_run THEN
+      TRUNCATE index_watch.reindex_work;
+      COMMIT;
+    END IF;
 
     FOR _datname IN 
       SELECT datname FROM pg_database 
