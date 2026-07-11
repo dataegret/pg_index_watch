@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.06';
+    RETURN '1.07';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -942,9 +942,11 @@ BEGIN
     FOR _rel IN
       SELECT DISTINCT w.schemaname, w.relname
       FROM index_watch.reindex_work AS w
-      WHERE w.schemaname <> 'pg_toast'
+      WHERE w.datid = _datid
+        AND w.schemaname <> 'pg_toast'
       ORDER BY w.schemaname, w.relname
     LOOP
+      PERFORM index_watch._dblink_connect_if_not(_datname);
       PERFORM dblink(_datname, 'ANALYZE '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
       PERFORM index_watch._record_indexes_info(_datname, _rel.schemaname, _rel.relname, NULL);
       COMMIT;
@@ -955,12 +957,14 @@ BEGIN
       indexsize = i.indexsize,
       estimated_bloat = (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real))
     FROM index_watch.index_current_state AS i
-    WHERE w.datid = i.datid AND w.indexrelid = i.indexrelid;
+    WHERE w.datid = _datid
+      AND w.datid = i.datid AND w.indexrelid = i.indexrelid;
 
     FOR _skipped IN
       UPDATE index_watch.reindex_work AS w
       SET reindex_skipped = TRUE
-      WHERE NOT w.reindex_skipped
+      WHERE w.datid = _datid
+        AND NOT w.reindex_skipped
         AND NOT (
         w.indexsize >= pg_size_bytes(index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'index_size_threshold'))
         AND index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
@@ -982,9 +986,11 @@ BEGIN
   FOR _index IN
     SELECT w.datname, w.schemaname, w.relname, w.indexrelname, w.indexsize, w.estimated_bloat
     FROM index_watch.reindex_work AS w
-    WHERE NOT w.reindex_skipped
+    WHERE w.datid = _datid
+      AND NOT w.reindex_skipped
     ORDER BY w.estimated_bloat DESC NULLS FIRST
     LOOP
+       PERFORM index_watch._dblink_connect_if_not(_index.datname);
        INSERT INTO index_watch.current_processed_index(
           datname,
           schemaname,
