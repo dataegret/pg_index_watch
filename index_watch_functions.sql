@@ -740,7 +740,6 @@ LANGUAGE plpgsql STRICT;
 
 
 
-
 CREATE OR REPLACE FUNCTION index_watch._reindex_index(_datname name, _schemaname name, _relname name, _indexrelname name) 
 RETURNS VOID 
 AS
@@ -830,40 +829,106 @@ CREATE OR REPLACE PROCEDURE index_watch.do_reindex(_datname name, _schemaname na
 AS
 $BODY$
 DECLARE
+  _datid OID;
   _index RECORD;
+  _rel RECORD;
+  _skipped RECORD;
 BEGIN
   PERFORM index_watch._check_structure_version();
+  SELECT oid INTO STRICT _datid FROM pg_database WHERE datname = _datname;
 
   IF _datname = ANY(dblink_get_connections()) IS NOT TRUE THEN
     PERFORM index_watch._dblink_connect_if_not(_datname);
   END IF;
-  FOR _index IN 
-    SELECT datname, schemaname, relname, indexrelname, indexsize, estimated_bloat
-    -- index_size_threshold check logic moved to get_index_bloat_estimates
-    -- force switch mean ignore index_rebuild_scale_factor and reindex all suitable indexes
-    -- indexes too small (less than index_size_threshold) or manually set to skip in config will be ignored even with force switch
-    -- todo: think about it someday
-    FROM index_watch.get_index_bloat_estimates(_datname)
-    WHERE
-      (_schemaname IS NULL OR schemaname=_schemaname)
-      AND
-      (_relname IS NULL OR relname=_relname)
-      AND
-      (_indexrelname IS NULL OR indexrelname=_indexrelname)
-      AND
-      (_force OR 
-          (
-            --skip too small indexes to have any interest
-            indexsize >= pg_size_bytes(index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_size_threshold'))
-            --skip indexes set to skip
-            AND index_watch.get_setting(datname, schemaname, relname, indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
-            -- AND index_watch.get_setting (for future configurability)
-            AND (
-                  estimated_bloat IS NULL 
-                  OR estimated_bloat >= index_watch.get_setting(datname, schemaname, relname, indexrelname, 'index_rebuild_scale_factor')::float
-            )
-          )
+
+  CREATE TEMP TABLE IF NOT EXISTS _iw_reindex_work (
+    datid oid NOT NULL,
+    indexrelid oid NOT NULL,
+    datname name NOT NULL,
+    schemaname name NOT NULL,
+    relname name NOT NULL,
+    indexrelname name NOT NULL,
+    indexsize bigint NOT NULL,
+    estimated_bloat_before real,
+    estimated_bloat real
+  ) ON COMMIT PRESERVE ROWS;
+
+  TRUNCATE _iw_reindex_work;
+
+  INSERT INTO _iw_reindex_work (
+    datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize,
+    estimated_bloat_before, estimated_bloat
+  )
+  SELECT
+    i.datid,
+    i.indexrelid,
+    i.datname,
+    i.schemaname,
+    i.relname,
+    i.indexrelname,
+    i.indexsize,
+    (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
+    (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real))
+  FROM index_watch.index_current_state AS i
+  WHERE
+    i.datid = _datid
+    AND (_schemaname IS NULL OR i.schemaname = _schemaname)
+    AND (_relname IS NULL OR i.relname = _relname)
+    AND (_indexrelname IS NULL OR i.indexrelname = _indexrelname)
+    AND (
+      _force OR (
+        i.indexsize >= pg_size_bytes(index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'index_size_threshold'))
+        AND index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
+        AND (
+          (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)) IS NULL
+          OR (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)) >= index_watch.get_setting(i.datname, i.schemaname, i.relname, i.indexrelname, 'index_rebuild_scale_factor')::float
+        )
       )
+    );
+
+  IF NOT _force THEN
+    FOR _rel IN
+      SELECT DISTINCT w.schemaname, w.relname
+      FROM _iw_reindex_work AS w
+      WHERE w.schemaname <> 'pg_toast'
+      ORDER BY w.schemaname, w.relname
+    LOOP
+      PERFORM dblink(_datname, 'ANALYZE '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
+      PERFORM index_watch._record_indexes_info(_datname, _rel.schemaname, _rel.relname, NULL);
+      COMMIT;
+    END LOOP;
+
+    UPDATE _iw_reindex_work AS w
+    SET
+      indexsize = i.indexsize,
+      estimated_bloat = (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real))
+    FROM index_watch.index_current_state AS i
+    WHERE w.datid = i.datid AND w.indexrelid = i.indexrelid;
+
+    FOR _skipped IN
+      DELETE FROM _iw_reindex_work AS w
+      WHERE NOT (
+        w.indexsize >= pg_size_bytes(index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'index_size_threshold'))
+        AND index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'skip')::boolean IS DISTINCT FROM TRUE
+        AND (
+          w.estimated_bloat IS NULL
+          OR w.estimated_bloat >= index_watch.get_setting(w.datname, w.schemaname, w.relname, w.indexrelname, 'index_rebuild_scale_factor')::float
+        )
+      )
+      RETURNING
+        w.datname, w.schemaname, w.relname, w.indexrelname,
+        w.estimated_bloat_before, w.estimated_bloat AS bloat_after
+    LOOP
+      RAISE NOTICE 'index_watch: skipping reindex of %.%.% on % after ANALYZE (estimated bloat % -> %)',
+        _skipped.schemaname, _skipped.relname, _skipped.indexrelname, _skipped.datname,
+        coalesce(_skipped.estimated_bloat_before::text, 'NULL'), coalesce(_skipped.bloat_after::text, 'NULL');
+    END LOOP;
+  END IF;
+
+  FOR _index IN
+    SELECT w.datname, w.schemaname, w.relname, w.indexrelname, w.indexsize, w.estimated_bloat
+    FROM _iw_reindex_work AS w
+    ORDER BY w.estimated_bloat DESC NULLS FIRST
     LOOP
        INSERT INTO index_watch.current_processed_index(
           datname,

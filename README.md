@@ -28,6 +28,32 @@ Further on, assuming that the ratio of index size to the number of entries is co
 Next, we receive a similar to autovacuum system that automatically tracks level of index bloat and rebuilds (via REINDEX CONCURRENTLY) them as needed.
 
 
+## Reindex decision flow (analyze before reindex)
+
+On fast-growing tables, a high estimated bloat value is often caused by stale `pg_class.reltuples` statistics rather than real index bloat. To avoid unnecessary `REINDEX CONCURRENTLY` runs, `index_watch.do_reindex` performs a confirmation step before rebuilding.
+
+Normal mode (`force=FALSE`, the default for `index_watch.periodic`):
+
+1. **Collect candidates** — one local read from `index_watch.index_current_state` (already populated by `index_watch.periodic` for the whole database).
+2. **Refresh statistics per table** — for each distinct table that has at least one reindex candidate, run `ANALYZE` on that table **once** (even if several of its indexes are candidates), then refresh index stats for that table only via `dblink`.
+3. **Re-evaluate candidates** — recompute estimated bloat locally from `index_current_state` and drop indexes that no longer exceed `index_rebuild_scale_factor`.
+4. **Reindex** — run `REINDEX CONCURRENTLY` only for indexes that remain in the work list.
+
+Indexes removed at step 3 are reported with `RAISE NOTICE`, for example:
+
+```
+NOTICE:  index_watch: skipping reindex of public.orders.idx_orders_created on mydb after ANALYZE (estimated bloat 2.45 -> 1.12)
+```
+
+Force mode (`force=TRUE`): the analyze/confirmation step is skipped — all suitable indexes (respecting `skip` and `index_size_threshold`) are rebuilt unconditionally, since the goal is a forced rebuild rather than bloat-based selection.
+
+To see these notices in cron logs, avoid the `-q` psql flag (it suppresses NOTICE messages), for example:
+
+```
+00 00 * * * psql -d postgres -AtXc "select not pg_is_in_recovery();" | grep -qx t || exit; psql -d postgres -t -c "CALL index_watch.periodic(TRUE);" >> index_watch.log 2>&1
+```
+
+
 ## Basic requirements for installation and usage:
     • PostgreSQL version 12.0 or higher
     • Superuser access to the database with the possibility writing cron from the current user 
@@ -129,7 +155,7 @@ forced populate of best index ratio for given database, schema, table, index wit
 
 ### index_watch.do_reindex
 PROCEDURE index_watch.do_reindex(_datname name, _schemaname name, _relname name, _indexrelname name, _force BOOLEAN DEFAULT FALSE) 
-perform reindex of bloated indexes in given database, schema, table, index (or every suitable indexes with _force=>true)
+perform reindex of bloated indexes in given database, schema, table, index (or every suitable indexes with _force=>true). In normal mode, runs ANALYZE once per candidate table and re-checks bloat before rebuilding; see "Reindex decision flow" above.
 
 ### index_watch.periodic
 PROCEDURE index_watch.periodic(real_run BOOLEAN DEFAULT FALSE, force BOOLEAN DEFAULT FALSE) AS
