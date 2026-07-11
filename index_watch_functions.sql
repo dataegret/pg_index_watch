@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.08';
+    RETURN '1.09';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -81,7 +81,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER := 11;
+  _required_version INTEGER := 12;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -99,7 +99,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 11;
+   _required_version INTEGER := 12;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -536,13 +536,38 @@ BEGIN
           indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before,
           pg_size_pretty(indexsize_after) AS size_after,
           (indexsize_before::float/NULLIF(indexsize_after, 0))::numeric(12,2) AS ratio,
-          pg_size_pretty(estimated_tuples_before_analyze) AS tuples_before_analyze,
-          pg_size_pretty(estimated_tuples) AS tuples_after_analyze,
+          pg_size_pretty(estimated_tuples_before_analyze) AS tup_b_anlz,
+          pg_size_pretty(estimated_tuples) AS tup_a_anlz,
           skipped,
           date_trunc('seconds', reindex_duration) AS duration
      FROM index_watch.reindex_history ORDER BY id DESC;
 
    UPDATE index_watch.tables_version SET version=11;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+--update table structure version from 11 to 12
+CREATE OR REPLACE FUNCTION index_watch._structure_version_11_12() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   DROP VIEW IF EXISTS index_watch.history;
+   CREATE VIEW index_watch.history AS
+     SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
+          datname AS db, schemaname AS schema, relname AS table,
+          indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before,
+          pg_size_pretty(indexsize_after) AS size_after,
+          (indexsize_before::float/NULLIF(indexsize_after, 0))::numeric(12,2) AS ratio,
+          pg_size_pretty(estimated_tuples_before_analyze) AS tup_b_anlz,
+          pg_size_pretty(estimated_tuples) AS tup_a_anlz,
+          skipped,
+          date_trunc('seconds', reindex_duration) AS duration
+     FROM index_watch.reindex_history ORDER BY id DESC;
+
+   UPDATE index_watch.tables_version SET version=12;
    RETURN;
 END;
 $BODY$
