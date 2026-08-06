@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.09';
+    RETURN '1.10';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -942,7 +942,8 @@ BEGIN
   _reindex_duration := pg_catalog.clock_timestamp ()-_timestamp;
   
   --analyze 
-  --skip analyze for toast tables
+  --skip analyze for toast tables (REINDEX already leaves correct index reltuples;
+  --ANALYZE does not refresh toast index stats anyway)
   IF (_schemaname != 'pg_toast') THEN
     _timestamp := clock_timestamp ();
     PERFORM dblink(_datname, 'ANALYZE '||pg_catalog.quote_ident(_schemaname)||'.'||pg_catalog.quote_ident(_relname));
@@ -1047,15 +1048,23 @@ BEGIN
     );
 
   IF NOT _force THEN
+    -- Confirm candidates: refresh reltuples before deciding to reindex.
+    -- Normal tables: ANALYZE is enough.
+    -- TOAST tables: ANALYZE does not refresh toast index reltuples; on insert-only
+    -- parents those stay stale and inflate estimated_bloat. Only VACUUM updates them
+    -- (e.g. VACUUM pg_toast.pg_toast_<oid>).
     FOR _rel IN
       SELECT DISTINCT w.schemaname, w.relname
       FROM index_watch.reindex_work AS w
       WHERE w.datid = _datid
-        AND w.schemaname <> 'pg_toast'
       ORDER BY w.schemaname, w.relname
     LOOP
       PERFORM index_watch._dblink_connect_if_not(_datname);
-      PERFORM dblink(_datname, 'ANALYZE '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
+      IF _rel.schemaname = 'pg_toast' THEN
+        PERFORM dblink(_datname, 'VACUUM '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
+      ELSE
+        PERFORM dblink(_datname, 'ANALYZE '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
+      END IF;
       PERFORM index_watch._record_indexes_info(_datname, _rel.schemaname, _rel.relname, NULL);
       COMMIT;
     END LOOP;

@@ -3,7 +3,7 @@
 Utility for automatic rebuild of bloated indexes in PostgreSQL  
 (a-la smart autovacuum, but for index bloat).
 
-**Code version:** `1.09` (`SELECT index_watch.version();`)  
+**Code version:** `1.10` (`SELECT index_watch.version();`)  
 **Table structure version:** `12` (`SELECT version FROM index_watch.tables_version;`)  
 **License:** BSD 3-Clause
 
@@ -242,8 +242,14 @@ before rebuilding.
 
 1. **Collect candidates** from `index_watch.index_current_state`  
    (size ≥ threshold, not skipped, bloat ≥ scale factor **or** `best_ratio` unknown).
-2. **Refresh stats per table** — for each distinct **non-TOAST** table that has at least one
-   candidate, run **one** `ANALYZE` on that table, then refresh index stats for that table via `dblink`.
+2. **Refresh stats per table** — for each distinct table that has at least one candidate:
+   - normal tables: one `ANALYZE`;
+   - **TOAST** tables (`pg_toast.pg_toast_*`): one `VACUUM` (not `ANALYZE`).
+   
+   `ANALYZE` does not refresh **toast index** `reltuples`. On insert-only parents those
+   values often go stale and inflate estimated bloat; only `VACUUM` on the toast table
+   updates them (e.g. `VACUUM pg_toast.pg_toast_12613205`). Then index stats are re-read
+   via `dblink`.
 3. **Re-evaluate** — recompute estimated bloat; mark indexes that no longer exceed the threshold
    as skipped.
 4. **Reindex** — `REINDEX INDEX CONCURRENTLY` only for remaining work items (worst bloat first).
@@ -277,7 +283,8 @@ psql -1 -d postgres -c "SELECT * FROM index_watch.reindex_work WHERE reindex_ski
 ```
 
 After each successful reindex the tool also runs `ANALYZE` on the parent table (except TOAST)
-to refresh statistics post-rebuild.
+to refresh statistics post-rebuild. TOAST is skipped here: REINDEX already leaves correct
+index `reltuples`, and `ANALYZE` would not update toast index stats.
 
 ### Crash safety for invalid concurrent leftovers
 
