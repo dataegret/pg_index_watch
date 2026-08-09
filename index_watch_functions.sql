@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.12';
+    RETURN '1.13';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -738,9 +738,9 @@ BEGIN
         , c.relname
         , i.relname AS indexrelname
         , x.indisvalid
-        -- For normal indexes use index reltuples. For TOAST indexes VACUUM/ANALYZE
-        -- often leave index.reltuples stale while the toast *table* reltuples is
-        -- updated; toast indexes cannot be partial, so table.reltuples is a safe proxy.
+        -- For normal indexes use index reltuples. For TOAST indexes, index.reltuples
+        -- is often stale; confirmation uses VACUUM (DISABLE_PAGE_SKIPPING) so toast
+        -- *table* reltuples is a reliable proxy (toast indexes cannot be partial).
         , CASE
             WHEN n.nspname = 'pg_toast' THEN c.reltuples::BIGINT
             ELSE i.reltuples::BIGINT
@@ -1103,9 +1103,11 @@ BEGIN
   IF NOT _force THEN
     -- Confirm candidates: refresh reltuples before deciding to reindex.
     -- Normal tables: ANALYZE is enough.
-    -- TOAST tables: VACUUM refreshes toast *table* reltuples (index.reltuples often
-    -- stays stale). Estimated tuples for toast indexes are taken from the toast
-    -- table pg_class row in _remote_get_indexes_info (safe: no partial toast indexes).
+    -- TOAST tables: plain VACUUM often keeps stale-low reltuples on insert-only
+    -- heaps (visibility-map page skipping does not fully recount live tuples).
+    -- DISABLE_PAGE_SKIPPING forces a real recount on the toast table; estimated
+    -- tuples for toast indexes then come from table pg_class in
+    -- _remote_get_indexes_info (safe: no partial toast indexes).
     FOR _rel IN
       SELECT DISTINCT w.schemaname, w.relname
       FROM index_watch.reindex_work AS w
@@ -1114,7 +1116,7 @@ BEGIN
     LOOP
       PERFORM index_watch._dblink_connect_if_not(_datname);
       IF _rel.schemaname = 'pg_toast' THEN
-        PERFORM dblink(_datname, 'VACUUM '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
+        PERFORM dblink(_datname, 'VACUUM (DISABLE_PAGE_SKIPPING) '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
       ELSE
         PERFORM dblink(_datname, 'ANALYZE '||pg_catalog.quote_ident(_rel.schemaname)||'.'||pg_catalog.quote_ident(_rel.relname));
       END IF;
