@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.10';
+    RETURN '1.11';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -705,7 +705,13 @@ BEGIN
         , c.relname
         , i.relname AS indexrelname
         , x.indisvalid
-        , i.reltuples::BIGINT AS indexreltuples
+        -- For normal indexes use index reltuples. For TOAST indexes VACUUM/ANALYZE
+        -- often leave index.reltuples stale while the toast *table* reltuples is
+        -- updated; toast indexes cannot be partial, so table.reltuples is a safe proxy.
+        , CASE
+            WHEN n.nspname = 'pg_toast' THEN c.reltuples::BIGINT
+            ELSE i.reltuples::BIGINT
+          END AS indexreltuples
         , pg_catalog.pg_relation_size(i.oid)::BIGINT AS indexsize        
         --debug only
         --, pg_namespace.nspname
@@ -1050,9 +1056,9 @@ BEGIN
   IF NOT _force THEN
     -- Confirm candidates: refresh reltuples before deciding to reindex.
     -- Normal tables: ANALYZE is enough.
-    -- TOAST tables: ANALYZE does not refresh toast index reltuples; on insert-only
-    -- parents those stay stale and inflate estimated_bloat. Only VACUUM updates them
-    -- (e.g. VACUUM pg_toast.pg_toast_<oid>).
+    -- TOAST tables: VACUUM refreshes toast *table* reltuples (index.reltuples often
+    -- stays stale). Estimated tuples for toast indexes are taken from the toast
+    -- table pg_class row in _remote_get_indexes_info (safe: no partial toast indexes).
     FOR _rel IN
       SELECT DISTINCT w.schemaname, w.relname
       FROM index_watch.reindex_work AS w

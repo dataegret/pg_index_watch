@@ -3,7 +3,7 @@
 Utility for automatic rebuild of bloated indexes in PostgreSQL  
 (a-la smart autovacuum, but for index bloat).
 
-**Code version:** `1.10` (`SELECT index_watch.version();`)  
+**Code version:** `1.11` (`SELECT index_watch.version();`)  
 **Table structure version:** `12` (`SELECT version FROM index_watch.tables_version;`)  
 **License:** BSD 3-Clause
 
@@ -246,10 +246,11 @@ before rebuilding.
    - normal tables: one `ANALYZE`;
    - **TOAST** tables (`pg_toast.pg_toast_*`): one `VACUUM` (not `ANALYZE`).
    
-   `ANALYZE` does not refresh **toast index** `reltuples`. On insert-only parents those
-   values often go stale and inflate estimated bloat; only `VACUUM` on the toast table
-   updates them (e.g. `VACUUM pg_toast.pg_toast_12613205`). Then index stats are re-read
-   via `dblink`.
+   For TOAST, `VACUUM` updates `reltuples` on the **toast table** itself, but often
+   leaves the toast **index** `pg_class.reltuples` stale (common on insert-only parents).
+   Therefore estimated tuple counts for toast indexes are taken from the toast table’s
+   `pg_class.reltuples`, not from the index row — safe because toast indexes cannot be
+   partial. Then stats are re-read via `dblink`.
 3. **Re-evaluate** — recompute estimated bloat; mark indexes that no longer exceed the threshold
    as skipped.
 4. **Reindex** — `REINDEX INDEX CONCURRENTLY` only for remaining work items (worst bloat first).
@@ -518,6 +519,8 @@ For each eligible local database (except the control DB):
 
 - Local cluster only (remote databases are not supported yet).
 - Relies on `reltuples` quality; confirmation ANALYZE mitigates false positives but is not magic.
+- **TOAST indexes:** estimated tuples use toast **table** `reltuples` (not index `reltuples`),
+  because VACUUM/ANALYZE often do not refresh toast index stats; toast indexes are never partial.
 - Bloat estimate is a **heuristic** (very good for btree-like growth patterns; not a page-level survey).
 - `reindex_work` is UNLOGGED — not a durable log.
 
