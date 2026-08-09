@@ -28,6 +28,8 @@ CREATE TABLE index_watch.reindex_history
   indexsize_after BIGINT not null,
   estimated_tuples_before_analyze bigint,
   estimated_tuples bigint not null,
+  best_ratio_before real,
+  best_ratio_after real,
   reindex_duration interval not null,
   analyze_duration interval not null,
   skipped boolean NOT NULL DEFAULT false
@@ -119,6 +121,8 @@ CREATE UNLOGGED TABLE index_watch.reindex_work
   estimated_bloat real,
   estimated_tuples_before_analyze bigint NOT NULL,
   estimated_tuples_after_analyze bigint NOT NULL,
+  best_ratio_before real,
+  best_ratio_after real,
   reindex_skipped boolean NOT NULL DEFAULT false
 );
 CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
@@ -131,7 +135,7 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(12);
+INSERT INTO index_watch.tables_version VALUES(13);
 
 
 -- current proccessed index can be invalid

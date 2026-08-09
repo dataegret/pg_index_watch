@@ -3,8 +3,8 @@
 Utility for automatic rebuild of bloated indexes in PostgreSQL  
 (a-la smart autovacuum, but for index bloat).
 
-**Code version:** `1.11` (`SELECT index_watch.version();`)  
-**Table structure version:** `12` (`SELECT version FROM index_watch.tables_version;`)  
+**Code version:** `1.12` (`SELECT index_watch.version();`)  
+**Table structure version:** `13` (`SELECT version FROM index_watch.tables_version;`)  
 **License:** BSD 3-Clause
 
 ---

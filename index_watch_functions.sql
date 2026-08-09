@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.11';
+    RETURN '1.12';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -81,7 +81,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER := 12;
+  _required_version INTEGER := 13;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -99,7 +99,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 12;
+   _required_version INTEGER := 13;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -432,6 +432,8 @@ BEGIN
         estimated_bloat real,
         estimated_tuples_before_analyze bigint NOT NULL,
         estimated_tuples_after_analyze bigint NOT NULL,
+        best_ratio_before real,
+        best_ratio_after real,
         reindex_skipped boolean NOT NULL DEFAULT false
       );
       CREATE INDEX reindex_work_datid_index on index_watch.reindex_work(datid, indexrelid);
@@ -465,6 +467,16 @@ BEGIN
            ALTER COLUMN indexsize_before_analyze SET NOT NULL,
            ALTER COLUMN estimated_tuples_before_analyze SET NOT NULL,
            ALTER COLUMN estimated_tuples_after_analyze SET NOT NULL;
+      END IF;
+      IF NOT EXISTS (
+         SELECT FROM information_schema.columns
+         WHERE table_schema = 'index_watch'
+           AND table_name = 'reindex_work'
+           AND column_name = 'best_ratio_before'
+      ) THEN
+         ALTER TABLE index_watch.reindex_work
+           ADD COLUMN best_ratio_before real,
+           ADD COLUMN best_ratio_after real;
       END IF;
    END IF;
    RETURN;
@@ -568,6 +580,27 @@ BEGIN
      FROM index_watch.reindex_history ORDER BY id DESC;
 
    UPDATE index_watch.tables_version SET version=12;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
+--update table structure version from 12 to 13
+CREATE OR REPLACE FUNCTION index_watch._structure_version_12_13() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   ALTER TABLE index_watch.reindex_history
+      ADD COLUMN IF NOT EXISTS best_ratio_before real,
+      ADD COLUMN IF NOT EXISTS best_ratio_after real;
+
+   ALTER TABLE index_watch.reindex_work
+      ADD COLUMN IF NOT EXISTS best_ratio_before real,
+      ADD COLUMN IF NOT EXISTS best_ratio_after real;
+
+   -- history view unchanged (best_ratio_* not exposed yet)
+   UPDATE index_watch.tables_version SET version=13;
    RETURN;
 END;
 $BODY$
@@ -908,12 +941,15 @@ LANGUAGE plpgsql STRICT;
 
 
 
+DROP FUNCTION IF EXISTS index_watch._reindex_index(name, name, name, name, bigint);
+DROP FUNCTION IF EXISTS index_watch._reindex_index(name, name, name, name, bigint, real);
 CREATE OR REPLACE FUNCTION index_watch._reindex_index(
   _datname name,
   _schemaname name,
   _relname name,
   _indexrelname name,
-  _estimated_tuples_before_analyze bigint DEFAULT NULL
+  _estimated_tuples_before_analyze bigint DEFAULT NULL,
+  _best_ratio_before real DEFAULT NULL
 )
 RETURNS VOID 
 AS
@@ -928,6 +964,7 @@ DECLARE
   _indexrelid OID;
   _datid OID;
   _indisvalid BOOLEAN;
+  _best_ratio_after REAL;
 BEGIN
 
   --RAISE NOTICE 'working with %.%.% %', _datname, _schemaname, _relname, _indexrelname;
@@ -959,12 +996,19 @@ BEGIN
   --get final index size
   SELECT datid, indexrelid, indisvalid, indexsize, estimated_tuples INTO STRICT _datid, _indexrelid, _indisvalid, _indexsize_after, _estimated_tuples
   FROM index_watch._remote_get_indexes_info(_datname, _schemaname, _relname, _indexrelname);
+
+  -- same best_ratio rule as written into index_current_state below
+  IF _indexsize_after < pg_size_bytes(index_watch.get_setting(_datname, _schemaname, _relname, _indexrelname, 'minimum_reliable_index_size')) THEN
+    _best_ratio_after := _best_ratio_before;
+  ELSE
+    _best_ratio_after := _indexsize_after::real/_estimated_tuples::real;
+  END IF;
   
   --log reindex action
   INSERT INTO index_watch.reindex_history
-  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples_before_analyze, estimated_tuples, reindex_duration, analyze_duration, skipped)
+  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples_before_analyze, estimated_tuples, best_ratio_before, best_ratio_after, reindex_duration, analyze_duration, skipped)
   VALUES 
-  (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples_before_analyze, _estimated_tuples, _reindex_duration, _analyze_duration, false);
+  (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples_before_analyze, _estimated_tuples, _best_ratio_before, _best_ratio_after, _reindex_duration, _analyze_duration, false);
   
   --update current_state... insert action here not possible in normal course of action 
   --but better keep it as possible option in case of someone decide to call _reindex_index directly
@@ -996,7 +1040,7 @@ BEGIN
   RETURN;
 END;
 $BODY$
-LANGUAGE plpgsql STRICT;
+LANGUAGE plpgsql;
 
 
 
@@ -1020,7 +1064,8 @@ BEGIN
   INSERT INTO index_watch.reindex_work (
     datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize,
     indexsize_before_analyze, estimated_bloat_before, estimated_bloat,
-    estimated_tuples_before_analyze, estimated_tuples_after_analyze, reindex_skipped
+    estimated_tuples_before_analyze, estimated_tuples_after_analyze,
+    best_ratio_before, best_ratio_after, reindex_skipped
   )
   SELECT
     i.datid,
@@ -1035,6 +1080,8 @@ BEGIN
     (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
     i.estimated_tuples,
     i.estimated_tuples,
+    i.best_ratio,
+    i.best_ratio,
     false
   FROM index_watch.index_current_state AS i
   WHERE
@@ -1079,7 +1126,8 @@ BEGIN
     SET
       indexsize = i.indexsize,
       estimated_bloat = (i.indexsize::real/(i.best_ratio*i.estimated_tuples::real)),
-      estimated_tuples_after_analyze = i.estimated_tuples
+      estimated_tuples_after_analyze = i.estimated_tuples,
+      best_ratio_after = i.best_ratio
     FROM index_watch.index_current_state AS i
     WHERE w.datid = _datid
       AND w.datid = i.datid AND w.indexrelid = i.indexrelid;
@@ -1103,19 +1151,21 @@ BEGIN
       datid, indexrelid, datname, schemaname, relname, indexrelname,
       indexsize_before, indexsize_after,
       estimated_tuples_before_analyze, estimated_tuples,
+      best_ratio_before, best_ratio_after,
       reindex_duration, analyze_duration, skipped
     )
     SELECT
       datid, indexrelid, datname, schemaname, relname, indexrelname,
       indexsize_before_analyze, indexsize,
       estimated_tuples_before_analyze, estimated_tuples_after_analyze,
+      best_ratio_before, best_ratio_after,
       '0s'::interval, '0s'::interval, true
     FROM skipped;
   END IF;
 
   FOR _index IN
     SELECT w.datname, w.schemaname, w.relname, w.indexrelname, w.indexsize, w.estimated_bloat,
-           w.estimated_tuples_before_analyze
+           w.estimated_tuples_before_analyze, w.best_ratio_before
     FROM index_watch.reindex_work AS w
     WHERE w.datid = _datid
       AND NOT w.reindex_skipped
@@ -1135,7 +1185,10 @@ BEGIN
           _index.indexrelname
        );
        COMMIT;
-       PERFORM index_watch._reindex_index(_index.datname, _index.schemaname, _index.relname, _index.indexrelname, _index.estimated_tuples_before_analyze);
+       PERFORM index_watch._reindex_index(
+         _index.datname, _index.schemaname, _index.relname, _index.indexrelname,
+         _index.estimated_tuples_before_analyze, _index.best_ratio_before
+       );
        COMMIT;
        DELETE FROM index_watch.current_processed_index 
        WHERE 
