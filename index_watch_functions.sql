@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION index_watch.version()
 RETURNS TEXT AS
 $BODY$
 BEGIN
-    RETURN '1.13';
+    RETURN '1.14';
 END;
 $BODY$
 LANGUAGE plpgsql IMMUTABLE;
@@ -81,7 +81,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
   _tables_version INTEGER;
-  _required_version INTEGER := 13;
+  _required_version INTEGER := 14;
 BEGIN
     SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
     IF (_tables_version<_required_version) THEN
@@ -99,7 +99,7 @@ RETURNS VOID AS
 $BODY$
 DECLARE
    _tables_version INTEGER;
-   _required_version INTEGER := 13;
+   _required_version INTEGER := 14;
 BEGIN
    SELECT version INTO STRICT _tables_version FROM index_watch.tables_version;	
    WHILE (_tables_version<_required_version) LOOP
@@ -607,6 +607,50 @@ $BODY$
 LANGUAGE plpgsql;
 
 
+--update table structure version from 13 to 14
+CREATE OR REPLACE FUNCTION index_watch._structure_version_13_14() 
+RETURNS VOID AS
+$BODY$
+BEGIN
+   ALTER TABLE index_watch.reindex_history
+      ADD COLUMN IF NOT EXISTS "new" boolean NOT NULL DEFAULT false;
+
+   -- First history row per logical index is "new".
+   -- Identity is (datname, schemaname, relname, indexrelname): REINDEX CONCURRENTLY
+   -- changes indexrelid, so (datid, indexrelid) would mark every rebuild as new.
+   UPDATE index_watch.reindex_history AS h
+   SET "new" = s.is_first
+   FROM (
+     SELECT id,
+            row_number() OVER (
+              PARTITION BY datname, schemaname, relname, indexrelname
+              ORDER BY id
+            ) = 1 AS is_first
+     FROM index_watch.reindex_history
+   ) AS s
+   WHERE h.id = s.id;
+
+   DROP VIEW IF EXISTS index_watch.history;
+   CREATE VIEW index_watch.history AS
+     SELECT date_trunc('second', entry_timestamp)::timestamp AS ts,
+          datname AS db, schemaname AS schema, relname AS table,
+          indexrelname AS index, pg_size_pretty(indexsize_before) AS size_before,
+          pg_size_pretty(indexsize_after) AS size_after,
+          (indexsize_before::float/NULLIF(indexsize_after, 0))::numeric(12,2) AS ratio,
+          pg_size_pretty(estimated_tuples_before_analyze) AS tup_b_anlz,
+          pg_size_pretty(estimated_tuples) AS tup_a_anlz,
+          skipped AS skip,
+          "new" AS is_new,
+          date_trunc('seconds', reindex_duration) AS duration
+     FROM index_watch.reindex_history ORDER BY id DESC;
+
+   UPDATE index_watch.tables_version SET version=14;
+   RETURN;
+END;
+$BODY$
+LANGUAGE plpgsql;
+
+
 --convert patterns from psql format to like format
 CREATE OR REPLACE FUNCTION index_watch._pattern_convert(_var text)
 RETURNS TEXT AS
@@ -965,6 +1009,7 @@ DECLARE
   _datid OID;
   _indisvalid BOOLEAN;
   _best_ratio_after REAL;
+  _is_new BOOLEAN;
 BEGIN
 
   --RAISE NOTICE 'working with %.%.% %', _datname, _schemaname, _relname, _indexrelname;
@@ -1003,12 +1048,23 @@ BEGIN
   ELSE
     _best_ratio_after := _indexsize_after::real/_estimated_tuples::real;
   END IF;
+
+  -- primary processing: no prior reindex_history for this logical index
+  -- (name identity — indexrelid changes on REINDEX CONCURRENTLY)
+  _is_new := NOT EXISTS (
+    SELECT 1
+    FROM index_watch.reindex_history AS h
+    WHERE h.datname = _datname
+      AND h.schemaname = _schemaname
+      AND h.relname = _relname
+      AND h.indexrelname = _indexrelname
+  );
   
   --log reindex action
   INSERT INTO index_watch.reindex_history
-  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples_before_analyze, estimated_tuples, best_ratio_before, best_ratio_after, reindex_duration, analyze_duration, skipped)
+  (datid, indexrelid, datname, schemaname, relname, indexrelname, indexsize_before, indexsize_after, estimated_tuples_before_analyze, estimated_tuples, best_ratio_before, best_ratio_after, reindex_duration, analyze_duration, skipped, "new")
   VALUES 
-  (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples_before_analyze, _estimated_tuples, _best_ratio_before, _best_ratio_after, _reindex_duration, _analyze_duration, false);
+  (_datid, _indexrelid, _datname, _schemaname, _relname, _indexrelname, _indexsize_before, _indexsize_after, _estimated_tuples_before_analyze, _estimated_tuples, _best_ratio_before, _best_ratio_after, _reindex_duration, _analyze_duration, false, _is_new);
   
   --update current_state... insert action here not possible in normal course of action 
   --but better keep it as possible option in case of someone decide to call _reindex_index directly
@@ -1154,15 +1210,23 @@ BEGIN
       indexsize_before, indexsize_after,
       estimated_tuples_before_analyze, estimated_tuples,
       best_ratio_before, best_ratio_after,
-      reindex_duration, analyze_duration, skipped
+      reindex_duration, analyze_duration, skipped, "new"
     )
     SELECT
-      datid, indexrelid, datname, schemaname, relname, indexrelname,
-      indexsize_before_analyze, indexsize,
-      estimated_tuples_before_analyze, estimated_tuples_after_analyze,
-      best_ratio_before, best_ratio_after,
-      '0s'::interval, '0s'::interval, true
-    FROM skipped;
+      s.datid, s.indexrelid, s.datname, s.schemaname, s.relname, s.indexrelname,
+      s.indexsize_before_analyze, s.indexsize,
+      s.estimated_tuples_before_analyze, s.estimated_tuples_after_analyze,
+      s.best_ratio_before, s.best_ratio_after,
+      '0s'::interval, '0s'::interval, true,
+      NOT EXISTS (
+        SELECT 1
+        FROM index_watch.reindex_history AS h
+        WHERE h.datname = s.datname
+          AND h.schemaname = s.schemaname
+          AND h.relname = s.relname
+          AND h.indexrelname = s.indexrelname
+      )
+    FROM skipped AS s;
   END IF;
 
   FOR _index IN

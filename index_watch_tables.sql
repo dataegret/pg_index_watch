@@ -32,7 +32,9 @@ CREATE TABLE index_watch.reindex_history
   best_ratio_after real,
   reindex_duration interval not null,
   analyze_duration interval not null,
-  skipped boolean NOT NULL DEFAULT false
+  skipped boolean NOT NULL DEFAULT false,
+  -- first history row for this logical index (name identity; indexrelid changes on REINDEX CONCURRENTLY)
+  "new" boolean NOT NULL DEFAULT false
 );
 CREATE INDEX reindex_history_oid_index on index_watch.reindex_history(datid, indexrelid);
 CREATE INDEX reindex_history_index on index_watch.reindex_history(datname, schemaname, relname, indexrelname);
@@ -86,7 +88,8 @@ CREATE VIEW index_watch.history AS
        (indexsize_before::float/NULLIF(indexsize_after, 0))::numeric(12,2) AS ratio,
        pg_size_pretty(estimated_tuples_before_analyze) AS tup_b_anlz,
        pg_size_pretty(estimated_tuples) AS tup_a_anlz,
-       skipped,
+       skipped AS skip,
+       "new" AS is_new,
        date_trunc('seconds', reindex_duration) AS duration
   FROM index_watch.reindex_history ORDER BY id DESC;
 
@@ -135,7 +138,7 @@ CREATE TABLE index_watch.tables_version
 	version smallint NOT NULL
 );
 CREATE UNIQUE INDEX tables_version_single_row ON  index_watch.tables_version((version IS NOT NULL));
-INSERT INTO index_watch.tables_version VALUES(13);
+INSERT INTO index_watch.tables_version VALUES(14);
 
 
 -- current proccessed index can be invalid

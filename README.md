@@ -3,8 +3,8 @@
 Utility for automatic rebuild of bloated indexes in PostgreSQL  
 (a-la smart autovacuum, but for index bloat).
 
-**Code version:** `1.13` (`SELECT index_watch.version();`)  
-**Table structure version:** `13` (`SELECT version FROM index_watch.tables_version;`)  
+**Code version:** `1.14` (`SELECT index_watch.version();`)  
+**Table structure version:** `14` (`SELECT version FROM index_watch.tables_version;`)  
 **License:** BSD 3-Clause
 
 ---
@@ -258,7 +258,8 @@ before rebuilding.
 4. **Reindex** — `REINDEX INDEX CONCURRENTLY` only for remaining work items (worst bloat first).
 
 Indexes skipped at step 3 are written to `index_watch.reindex_history` with `skipped = TRUE`
-(`reindex_duration` / `analyze_duration` zero). Review them via `index_watch.history`.
+(`reindex_duration` / `analyze_duration` zero). Review them via `index_watch.history` (`skip`).
+The first history row for a logical index is flagged `new` / view `is_new`.
 
 ### Force mode (`force = TRUE`)
 
@@ -379,7 +380,10 @@ History is updated during real runs (`periodic(TRUE)` / `do_reindex`).
 psql -1 -d postgres -c "SELECT * FROM index_watch.history LIMIT 20;"
 
 # only indexes skipped after ANALYZE confirmation
-psql -1 -d postgres -c "SELECT * FROM index_watch.history WHERE skipped ORDER BY ts DESC LIMIT 20;"
+psql -1 -d postgres -c "SELECT * FROM index_watch.history WHERE skip ORDER BY ts DESC LIMIT 20;"
+
+# first-ever history row for an index (primary baseline / first sighting)
+psql -1 -d postgres -c "SELECT * FROM index_watch.history WHERE is_new ORDER BY ts DESC LIMIT 20;"
 ```
 
 `index_watch.history` columns (view over `reindex_history`):
@@ -391,8 +395,12 @@ psql -1 -d postgres -c "SELECT * FROM index_watch.history WHERE skipped ORDER BY
 | `size_before` / `size_after` | Pretty sizes |
 | `ratio` | size_before / size_after |
 | `tup_b_anlz` / `tup_a_anlz` | Estimated tuples before/after ANALYZE (pretty) |
-| `skipped` | `true` if not reindexed after confirmation |
+| `skip` | `true` if not reindexed after confirmation (`reindex_history.skipped`) |
+| `is_new` | `true` if this is the first history row for the logical index (`reindex_history.new`) |
 | `duration` | Reindex duration |
+
+Logical index identity for `new` / `is_new` is `(datname, schemaname, relname, indexrelname)`.
+`indexrelid` alone is not used: `REINDEX CONCURRENTLY` assigns a new OID.
 
 ### Current bloat estimates
 
